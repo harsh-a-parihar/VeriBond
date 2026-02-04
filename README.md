@@ -271,20 +271,6 @@ VeriBond/
 └── README.md
 ```
 
----
-
-## 🏆 Why VeriBond Wins
-
-| Criteria | Our Approach |
-|----------|--------------|
-| **Novelty** | First protocol combining AI agent economics with DeFi accountability |
-| **Technical Depth** | Custom smart contracts, Uniswap v4 hooks, Yellow state channels |
-| **Partner Integration** | Deep integration with Uniswap CCA, Yellow Protocol |
-| **Real Problem** | Solves AI trust crisis with crypto-economic incentives |
-| **Demo Quality** | Live agents competing on real Polymarket history |
-
----
-
 
 ---
 
