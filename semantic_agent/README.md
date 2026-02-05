@@ -108,6 +108,30 @@ print(len(clusters), 'clusters written to DB.')
 
 Embeddings live in **`data/processed/chroma/`**; cluster assignments are in the same SQLite DB (`clusters` and `market_clusters` tables). Config: `embedding_model`, `embed_batch_size`, `chroma_collection_name`, `cluster_ratio` (K ≈ N × cluster_ratio).
 
+### 7. Stage 3: Label clusters (LLM)
+
+This assigns each cluster a single category (taxonomy) and writes it back to SQLite (`clusters.category`, `clusters.label_rationale`).
+
+1. Configure in **`.env`** (repo root):
+   - **OpenAI:** set `VERIBOND_OPENAI_API_KEY` to your OpenAI key. Leave `VERIBOND_OPENAI_API_BASE` unset.
+   - **OpenRouter:** set `VERIBOND_OPENAI_API_KEY` to your OpenRouter key and `VERIBOND_OPENAI_API_BASE=https://openrouter.ai/api/v1`.
+
+2. Run labeling (defaults: label up to 200 clusters, sample 20 questions per cluster):
+
+```bash
+export PYTHONPATH=.
+python -c "
+from semantic_agent.config import get_settings
+from semantic_agent.pipeline.label import run_label_clusters
+s = get_settings()
+labels = run_label_clusters(s.database_url)
+print(len(labels), 'clusters labeled.')
+"
+```
+
+You can override limits per run:
+- `run_label_clusters(..., max_clusters=50, sample_size=25)`
+
 ## Project layout
 
 ```

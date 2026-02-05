@@ -59,8 +59,24 @@ class Settings(BaseSettings):
     )
 
     # LLM (optional; for labeling and relationship discovery)
-    openai_api_key: str | None = Field(default=None, description="OpenAI API key")
+    openai_api_key: str | None = Field(default=None, description="OpenAI or OpenRouter API key")
+    openai_api_base: str | None = Field(
+        default=None,
+        description="API base URL (e.g. https://openrouter.ai/api/v1). Leave unset for OpenAI.",
+    )
     openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model for labeling/relations")
+    label_sample_size: int = Field(
+        default=20,
+        ge=1,
+        le=200,
+        description="How many market questions to sample per cluster for labeling",
+    )
+    label_max_clusters: int = Field(
+        default=200,
+        ge=1,
+        le=10000,
+        description="Max clusters to label per run (safety + cost control)",
+    )
 
     # Polymarket / APIs
     polymarket_api_base: str = Field(
