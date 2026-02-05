@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from semantic_agent.logging_utils import configure_logging
@@ -121,6 +122,35 @@ def discover_relations_for_cluster(
     return mr_list.relations
 
 
+def _process_one_cluster(
+    c: Cluster,
+    m_list: list[Market],
+    *,
+    openai_api_key: str,
+    openai_model: str,
+    openai_api_base: str | None,
+    max_relations_per_cluster: int,
+) -> tuple[str, list[MarketRelation] | None]:
+    """
+    Discover relations for one cluster (runs in worker thread).
+    Returns (cluster_id, relations) or (cluster_id, None) on error.
+    """
+    try:
+        relations = discover_relations_for_cluster(
+            c,
+            m_list,
+            openai_api_key=openai_api_key,
+            openai_model=openai_model,
+            openai_api_base=openai_api_base,
+            taxonomy_hint=c.category if c.category != "other" else None,
+            max_relations=max_relations_per_cluster,
+        )
+        return (c.cluster_id, relations)
+    except Exception as exc:
+        logger.warning("Cluster %s: discovery failed (%s); skipping", c.cluster_id, exc)
+        return (c.cluster_id, None)
+
+
 def run_discover_relations(
     database_url: str,
     *,
@@ -129,9 +159,15 @@ def run_discover_relations(
     max_relations_per_cluster: int | None = None,
     only_labeled: bool = True,
     only_resolved: bool = False,
+    skip_clusters_with_relations: bool = False,
+    parallel_workers: int | None = None,
 ) -> dict[str, int]:
     """
     Run relationship discovery over clusters and persist results.
+
+    When skip_clusters_with_relations=True, clusters that already have relations
+    in the DB are skipped (useful when resuming after a partial run).
+    Uses parallel_workers (default from config) to process multiple clusters at once.
 
     Returns a mapping {cluster_id: num_relations_written}.
     """
@@ -139,6 +175,7 @@ def run_discover_relations(
 
     from semantic_agent.config import get_settings
     from semantic_agent.store import (
+        get_cluster_ids_with_relations,
         read_clusters,
         read_markets,
         write_relations_for_cluster,
@@ -159,6 +196,12 @@ def run_discover_relations(
         if max_relations_per_cluster is not None
         else settings.relations_max_relations_per_cluster
     )
+    parallel_workers = (
+        parallel_workers
+        if parallel_workers is not None
+        else getattr(settings, "relations_parallel_workers", 5)
+    )
+    parallel_workers = max(1, min(parallel_workers, 20))
 
     clusters = read_clusters(database_url)
     if not clusters:
@@ -168,21 +211,22 @@ def run_discover_relations(
     if only_labeled:
         clusters = [c for c in clusters if c.category and c.category != "other"]
 
+    if skip_clusters_with_relations:
+        done_ids = get_cluster_ids_with_relations(database_url)
+        before = len(clusters)
+        clusters = [c for c in clusters if c.cluster_id not in done_ids]
+        skipped = before - len(clusters)
+        if skipped:
+            logger.info("Skipping %d clusters that already have relations", skipped)
+
     clusters = clusters[:max_clusters]
 
     all_markets = read_markets(database_url)
     markets_by_id: dict[str, Market] = {m.id: m for m in all_markets}
 
-    logger.info(
-        "Running relationship discovery on %d clusters (only_labeled=%s, only_resolved=%s)",
-        len(clusters),
-        only_labeled,
-        only_resolved,
-    )
-
-    results: dict[str, int] = {}
-    for idx, c in enumerate(clusters, start=1):
-        # Collect markets in this cluster
+    # Build (cluster, market_list) for each cluster that has enough markets
+    tasks: list[tuple[Cluster, list[Market]]] = []
+    for c in clusters:
         m_list: list[Market] = []
         for mid in c.market_ids:
             m = markets_by_id.get(mid)
@@ -191,35 +235,67 @@ def run_discover_relations(
             if only_resolved and m.resolved_outcome not in ("YES", "NO"):
                 continue
             m_list.append(m)
-
         if len(m_list) < 2:
-            logger.info("Cluster %s skipped (not enough markets after filtering)", c.cluster_id)
+            logger.debug("Cluster %s skipped (not enough markets)", c.cluster_id)
             continue
-
         if len(m_list) > max_markets_per_cluster:
             m_list = m_list[:max_markets_per_cluster]
+        tasks.append((c, m_list))
 
-        relations = discover_relations_for_cluster(
+    logger.info(
+        "Running relationship discovery on %d clusters (workers=%d, only_labeled=%s)",
+        len(tasks),
+        parallel_workers,
+        only_labeled,
+    )
+
+    results: dict[str, int] = {}
+    completed = 0
+    failed_clusters: list[str] = []
+
+    def _run_task(item: tuple[Cluster, list[Market]]) -> tuple[str, list[MarketRelation] | None]:
+        c, m_list = item
+        return _process_one_cluster(
             c,
             m_list,
             openai_api_key=settings.openai_api_key,
             openai_model=settings.openai_model,
             openai_api_base=settings.openai_api_base,
-            taxonomy_hint=c.category if c.category != "other" else None,
-            max_relations=max_relations_per_cluster,
+            max_relations_per_cluster=max_relations_per_cluster,
         )
 
-        write_relations_for_cluster(database_url, cluster_id=c.cluster_id, relations=relations)
-        results[c.cluster_id] = len(relations)
+    with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+        futures = {executor.submit(_run_task, item): item[0].cluster_id for item in tasks}
+        for future in as_completed(futures):
+            cluster_id = futures[future]
+            try:
+                cid, relations = future.result()
+                if relations is None:
+                    failed_clusters.append(cid)
+                    continue
+                try:
+                    write_relations_for_cluster(
+                        database_url, cluster_id=cid, relations=relations
+                    )
+                    results[cid] = len(relations)
+                except Exception as exc:
+                    logger.warning("Cluster %s: write failed (%s); skipping", cid, exc)
+                    failed_clusters.append(cid)
+            except Exception as exc:
+                logger.warning("Cluster %s: unexpected error (%s); skipping", cluster_id, exc)
+                failed_clusters.append(cluster_id)
+            completed += 1
+            if completed == 1 or completed % max(1, len(tasks) // 10) == 0 or completed == len(tasks):
+                logger.info(
+                    "Relations: completed %d/%d clusters (%d written, %d failed)",
+                    completed,
+                    len(tasks),
+                    len(results),
+                    len(failed_clusters),
+                )
 
-        if idx == 1 or idx % max(1, len(clusters) // 10) == 0:
-            logger.info(
-                "Relations: processed %d/%d clusters (latest=%s, relations=%d)",
-                idx,
-                len(clusters),
-                c.cluster_id,
-                len(relations),
-            )
+    if failed_clusters:
+        logger.warning("Relations: %d cluster(s) failed or skipped: %s", len(failed_clusters), failed_clusters[:10])
 
     return results
 

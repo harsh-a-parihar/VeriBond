@@ -47,6 +47,49 @@ def _parse_tokens(tokens: Any) -> tuple[ResolvedOutcome | None, bool]:
     return resolved, is_binary
 
 
+def _resolved_outcome_from_uma_and_prices(
+    uma_resolution_status: Any,
+    outcome_prices_raw: Any,
+    outcomes_raw: Any,
+) -> tuple[ResolvedOutcome | None, bool]:
+    """
+    Derive resolved_outcome from Kaggle-style columns: umaResolutionStatus, outcomePrices, outcomes.
+
+    When umaResolutionStatus == "resolved", the outcome with price 1 (or max price) is the winner.
+    For binary markets we map winner index 0 -> YES, 1 -> NO so evaluation (same/opposite outcome)
+    is consistent across markets.
+
+    Returns (resolved_outcome, is_binary). (None, True) when not resolved or unparseable.
+    """
+    if uma_resolution_status != "resolved":
+        return None, True
+    if outcome_prices_raw is None or (isinstance(outcome_prices_raw, float) and pd.isna(outcome_prices_raw)):
+        return None, True
+    if outcomes_raw is None or (isinstance(outcomes_raw, float) and pd.isna(outcomes_raw)):
+        return None, True
+    prices_str = outcome_prices_raw if isinstance(outcome_prices_raw, str) else str(outcome_prices_raw)
+    outcomes_str = outcomes_raw if isinstance(outcomes_raw, str) else str(outcomes_raw)
+    if not prices_str.strip() or not outcomes_str.strip():
+        return None, True
+    try:
+        prices = json.loads(prices_str)
+        outcomes = json.loads(outcomes_str)
+    except (json.JSONDecodeError, TypeError):
+        return None, True
+    if not isinstance(prices, list) or not isinstance(outcomes, list) or len(prices) != len(outcomes):
+        return None, True
+    if len(prices) != 2:
+        return None, False  # not binary
+    try:
+        values = [float(p) for p in prices]
+    except (TypeError, ValueError):
+        return None, True
+    winner_index = values.index(max(values))
+    # Map position to YES/NO for evaluation consistency (first outcome = YES, second = NO)
+    resolved: ResolvedOutcome = "YES" if winner_index == 0 else "NO"
+    return resolved, True
+
+
 def _safe_datetime(value: Any) -> Any:
     """Parse datetime from string or return None. Always returns timezone-naive for subtraction."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -88,9 +131,14 @@ def load_markets_from_csv(
     """
     Load a CSV of prediction markets and normalize into Market list.
 
+    Resolved outcome is derived from either:
+    - tokens: JSON list of dicts with 'outcome' (YES/NO) and 'winner' (bool), or
+    - Kaggle-style: uma_resolution_status == "resolved" plus outcome_prices (JSON
+      array of final prices) and outcomes (JSON array of labels); winner = index of
+      max price; mapped to YES (index 0) / NO (index 1) for evaluation.
+
     Expects columns: question, (question_id or condition_id), optional description,
-    start_time/end_time or game_start_time/end_date_iso, tokens (JSON list with
-    outcome/winner), optional tags.
+    start_time/end_time or game_start_time/end_date_iso, optional tags.
 
     Args:
         path: Path to CSV file.
@@ -126,6 +174,16 @@ def load_markets_from_csv(
 
         tokens_raw = row.get("tokens")
         resolved_outcome, is_binary = _parse_tokens(tokens_raw)
+        # Kaggle Polymarket CSV: no "tokens"; use uma_resolution_status + outcome_prices + outcomes
+        if resolved_outcome is None:
+            uma_resolved, is_binary_uma = _resolved_outcome_from_uma_and_prices(
+                row.get("uma_resolution_status"),
+                row.get("outcome_prices"),
+                row.get("outcomes"),
+            )
+            if uma_resolved is not None:
+                resolved_outcome = uma_resolved
+                is_binary = is_binary_uma
         if require_binary and not is_binary:
             continue
         if require_resolved and resolved_outcome is None:
