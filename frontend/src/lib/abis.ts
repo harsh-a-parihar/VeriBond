@@ -107,6 +107,23 @@ export const TRUTH_STAKE_ABI = [
 // Identity Registry ABI
 export const IDENTITY_REGISTRY_ABI = [
     {
+        name: 'register',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [{ name: 'agentURI', type: 'string' }],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'setAgentWallet',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [
+            { name: 'agentId', type: 'uint256' },
+            { name: 'wallet', type: 'address' },
+        ],
+        outputs: [],
+    },
+    {
         name: 'ownerOf',
         type: 'function',
         stateMutability: 'view',

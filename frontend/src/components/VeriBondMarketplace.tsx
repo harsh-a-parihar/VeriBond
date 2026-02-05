@@ -1,11 +1,15 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { useAccount } from 'wagmi';
+import { useAgentStats, useClaimCount } from '@/hooks';
+import { ADMIN_WALLET } from '@/lib/contracts';
 import {
-    Search, ShieldCheck, Flame, Gavel,
-    Activity, Zap, Clock, Wallet,
-    ArrowUpRight, ArrowDownRight, User,
-    Layers, Lock, AlertTriangle
+    Search, ShieldCheck, Gavel,
+    Activity, User, Zap,
+    AlertTriangle, Plus, Layers
 } from 'lucide-react';
 
 // --- TYPES ---
@@ -160,6 +164,14 @@ const AgentCard = ({ agent }: { agent: Agent }) => {
 
 export default function VeriBondMarketplaceFinal() {
     const [view, setView] = useState<'live' | 'auctions'>('live');
+    const { address, isConnected } = useAccount();
+    const { count: claimCount } = useClaimCount();
+
+    // Format address for display
+    const displayAddress = address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '';
+
+    // Check if admin
+    const isAdmin = address?.toLowerCase() === ADMIN_WALLET.toLowerCase();
 
     return (
         <div className="flex h-screen bg-[#050505] text-zinc-200 font-sans selection:bg-teal-900/30">
@@ -177,20 +189,51 @@ export default function VeriBondMarketplaceFinal() {
                 {/* User Identity (Soulbound) */}
                 <div className="p-6 border-b border-white/5">
                     <div className="text-[10px] uppercase tracking-widest text-zinc-500 mb-3 font-semibold">Owner Identity</div>
-                    <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/50 flex items-center gap-3">
-                        <div className="w-10 h-10 rounded bg-gradient-to-br from-zinc-800 to-black border border-white/5 flex items-center justify-center">
-                            <User size={16} className="text-zinc-400" />
-                        </div>
-                        <div>
-                            <div className="text-xs font-bold text-zinc-200">rohan.eth</div>
-                            <div className="text-[10px] text-teal-500 flex items-center gap-1">
-                                <ShieldCheck size={10} /> Reputation: Good
+                    {isConnected ? (
+                        <>
+                            <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/50 flex items-center gap-3">
+                                <div className="w-10 h-10 rounded bg-zinc-900 border border-zinc-700 flex items-center justify-center">
+                                    <User size={16} className="text-zinc-400" />
+                                </div>
+                                <div>
+                                    <div className="text-xs font-medium text-zinc-300">{displayAddress}</div>
+                                    <div className="text-[10px] text-zinc-500 flex items-center gap-1">
+                                        <ShieldCheck size={10} /> Connected
+                                    </div>
+                                </div>
                             </div>
-                        </div>
-                    </div>
-                    <button className="mt-3 w-full py-2 text-xs font-medium border border-zinc-800 hover:bg-zinc-900 rounded text-zinc-400 transition-colors">
-                        Mint New Agent ID
-                    </button>
+                            <Link href="/claims/new" className="mt-3 w-full py-2 text-xs font-medium border border-zinc-800 hover:bg-zinc-900 rounded text-zinc-400 transition-colors block text-center">
+                                Submit New Claim
+                            </Link>
+                            {isAdmin && (
+                                <Link href="/agents/register" className="mt-2 w-full py-2 text-xs font-medium border border-zinc-800 hover:bg-zinc-900 rounded text-zinc-500 transition-colors flex items-center justify-center gap-2">
+                                    <Plus size={12} /> Register Agent
+                                </Link>
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/50 flex items-center gap-3">
+                                <div className="w-10 h-10 rounded bg-gradient-to-br from-zinc-800 to-black border border-white/5 flex items-center justify-center">
+                                    <User size={16} className="text-zinc-400" />
+                                </div>
+                                <div>
+                                    <div className="text-xs font-bold text-zinc-500">Not Connected</div>
+                                    <div className="text-[10px] text-zinc-600">Connect to interact</div>
+                                </div>
+                            </div>
+                            <ConnectButton.Custom>
+                                {({ openConnectModal }) => (
+                                    <button
+                                        onClick={openConnectModal}
+                                        className="mt-3 w-full py-2 text-xs font-medium border border-zinc-800 hover:bg-zinc-900 rounded text-zinc-400 transition-colors"
+                                    >
+                                        Connect Wallet
+                                    </button>
+                                )}
+                            </ConnectButton.Custom>
+                        </>
+                    )}
                 </div>
 
                 {/* Navigation */}
@@ -240,11 +283,11 @@ export default function VeriBondMarketplaceFinal() {
                     <div className="flex gap-4 text-xs font-mono text-zinc-500">
                         <div className="flex items-center gap-2">
                             <div className="w-2 h-2 rounded-full bg-teal-500"></div>
-                            Active: 42
+                            Claims: {claimCount?.toString() ?? '...'}
                         </div>
                         <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 rounded-full bg-red-500"></div>
-                            Slashed: 3
+                            <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                            Agents: 4
                         </div>
                     </div>
                 </header>

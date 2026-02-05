@@ -2,6 +2,9 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { useAccount } from 'wagmi';
+import { useAgentStats, useClaimCount, useUSDCBalance } from '@/hooks';
 import {
     Terminal, ShieldAlert, Activity, Lock, Cpu, Search, Zap,
     Server, Wifi, Database, Layers, ArrowUpRight, AlertTriangle
@@ -10,6 +13,14 @@ import {
 // --- UTILS ---
 const formatCurrency = (val: number) =>
     new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
+
+const formatUSDC = (val: bigint | undefined) => {
+    if (!val) return '$0.00';
+    return formatCurrency(Number(val) / 1e6);
+};
+
+// Default agent ID - Agent #142 registered on Base Sepolia
+const DEFAULT_AGENT_ID = 142;
 
 // --- SUB-COMPONENTS ---
 
@@ -44,8 +55,8 @@ const HealthModule = ({ label, active, panic }: { label: string, active: boolean
         <div className="flex gap-1">
             {[1, 2, 3].map(i => (
                 <div key={i} className={`w-1 h-3 rounded-sm transition-colors duration-300 ${active
-                        ? (panic ? 'bg-red-500' : 'bg-teal-500')
-                        : 'bg-zinc-800'
+                    ? (panic ? 'bg-red-500' : 'bg-teal-500')
+                    : 'bg-zinc-800'
                     } ${active && i === 3 ? 'animate-pulse' : ''}`} />
             ))}
         </div>
@@ -58,13 +69,30 @@ export default function VeriBondDashboard() {
     const [panicMode, setPanicMode] = useState(false);
     const [input, setInput] = useState('');
     const [logs, setLogs] = useState<{ id: number, time: string, text: string, type: 'info' | 'success' | 'error' | 'dim' }[]>([
-        { id: 1, time: 'INIT', text: 'Identity Verified: ERC-8004 #4921', type: 'info' },
-        { id: 2, time: 'NET', text: 'Reactive Network Listener: Active', type: 'dim' },
+        { id: 1, time: 'INIT', text: 'VeriBond Terminal v4.0 Initialized', type: 'info' },
+        { id: 2, time: 'NET', text: 'Connecting to Base Sepolia...', type: 'dim' },
     ]);
+
+    // Web3 Hooks
+    const { address, isConnected } = useAccount();
+    const agentStats = useAgentStats(DEFAULT_AGENT_ID);
+    const { count: claimCount } = useClaimCount();
+    const { balanceFormatted: usdcBalance } = useUSDCBalance();
+
+    // Add connection log when wallet connects
+    useEffect(() => {
+        if (isConnected && address) {
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+            setLogs(prev => [...prev,
+            { id: Date.now(), time, text: `Wallet Connected: ${address.slice(0, 6)}...${address.slice(-4)}`, type: 'success' },
+            { id: Date.now() + 1, time, text: `Agent #${DEFAULT_AGENT_ID} Loaded - Accuracy: ${agentStats.accuracy.toFixed(1)}%`, type: 'info' },
+            ]);
+        }
+    }, [isConnected, address]);
 
     // Enhanced Graph Logic (Confidence Interval)
     const [points, setPoints] = useState<number[]>(Array(50).fill(50));
-    const [confidence, setConfidence] = useState<number[]>(Array(50).fill(2)); // The width of the "uncertainty" band
+    const [confidence, setConfidence] = useState<number[]>(Array(50).fill(2));
 
     const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -138,6 +166,22 @@ export default function VeriBondDashboard() {
                 </div>
                 <div className="flex items-center gap-4">
                     <StatusBadge status={panicMode ? "SYSTEM COMPROMISED" : "SYSTEM OPTIMAL"} panic={panicMode} />
+                    <ConnectButton.Custom>
+                        {({ account, chain, openConnectModal, openAccountModal, mounted }) => {
+                            const connected = mounted && account && chain;
+                            return (
+                                <button
+                                    onClick={connected ? openAccountModal : openConnectModal}
+                                    className={`px-3 py-1.5 rounded border text-xs font-mono transition-all ${connected
+                                        ? 'bg-teal-950/20 border-teal-900/50 text-teal-500 hover:bg-teal-900/30'
+                                        : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500'
+                                        }`}
+                                >
+                                    {connected ? `${account.displayName}` : 'CONNECT'}
+                                </button>
+                            );
+                        }}
+                    </ConnectButton.Custom>
                 </div>
             </nav>
 
@@ -223,12 +267,36 @@ export default function VeriBondDashboard() {
                 {/* --- RIGHT COLUMN: VISUALIZATION --- */}
                 <div className="lg:col-span-8 flex flex-col gap-6">
 
-                    {/* Top Stats */}
+                    {/* Top Stats - Now with real data */}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <StatCard label="Total Bonded" value={panicMode ? "$320,102" : "$421,920"} sub={panicMode ? "-24% CRASH" : "+1.2% 24h"} panic={panicMode} icon={Lock} />
-                        <StatCard label="Truth Score" value={panicMode ? "84.2%" : "99.9%"} sub="On-Chain Verified" panic={panicMode} icon={ShieldAlert} />
-                        <StatCard label="Slash Rate" value={panicMode ? "CRITICAL" : "0.02%"} sub="Global Avg" panic={panicMode} icon={Activity} />
-                        <StatCard label="Token Price" value={panicMode ? "$1.04" : "$12.45"} sub="USDC" panic={panicMode} icon={Database} />
+                        <StatCard
+                            label="USDC Balance"
+                            value={isConnected ? `$${usdcBalance}` : '--'}
+                            sub={isConnected ? 'Connected' : 'Connect Wallet'}
+                            panic={panicMode}
+                            icon={Lock}
+                        />
+                        <StatCard
+                            label="Truth Score"
+                            value={agentStats.isLoading ? '...' : `${agentStats.accuracy.toFixed(1)}%`}
+                            sub={`${agentStats.correct.toString()}/${agentStats.total.toString()} Claims`}
+                            panic={panicMode || agentStats.accuracy < 70}
+                            icon={ShieldAlert}
+                        />
+                        <StatCard
+                            label="Total Slashed"
+                            value={formatUSDC(agentStats.slashed)}
+                            sub="Agent #142"
+                            panic={agentStats.slashed > BigInt(0)}
+                            icon={Activity}
+                        />
+                        <StatCard
+                            label="Total Claims"
+                            value={claimCount?.toString() ?? '...'}
+                            sub="Platform-wide"
+                            panic={panicMode}
+                            icon={Database}
+                        />
                     </div>
 
                     {/* The Main Graph (Confidence Interval) */}

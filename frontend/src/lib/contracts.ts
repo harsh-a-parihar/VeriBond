@@ -6,3 +6,8 @@ export const CONTRACTS = {
     IDENTITY_REGISTRY: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
     USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
 } as const;
+
+// Admin wallet for demo - only this address can register agents
+// TODO: Replace with your wallet address
+export const ADMIN_WALLET = '0xF6930D0f03578Ca86D21A5Cba084307d00cd6130';
+
