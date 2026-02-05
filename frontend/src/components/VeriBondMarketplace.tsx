@@ -12,54 +12,64 @@ import {
     Activity, User, Zap,
     AlertTriangle, Plus, Layers
 } from 'lucide-react';
+// ... (imports)
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { RefreshCw } from 'lucide-react';
+import { CONTRACTS } from '@/lib/contracts';
 
 // --- TYPES ---
 
 type AgentStatus = 'auction' | 'active' | 'slashed';
 
+// ... (Agent Interface) ...
 interface Agent {
     id: string;
     name: string;
     ticker: string;
-    ens: string; // ENS Integration
+    ens: string;
     status: AgentStatus;
     price: number;
     change: number;
-    accuracy: number; // The Trust Signal
-    staked: string;   // USDC Staked
-    auctionProgress?: number; // Only for CCA
+    accuracy: number;
+    staked: string;
+    auctionProgress?: number;
+    image?: string;
+    description?: string;
 }
 
-// --- MOCK DATA (Polymarket Demo Context) ---
+// Data Fetcher
+const fetchAgents = async (): Promise<Agent[]> => {
+    const res = await fetch('/api/agents');
+    const data = await res.json();
+    if (data.status === 'init_needed') return [];
 
-const AGENTS: Agent[] = [
-    {
-        id: '1', name: 'PolyPredictor Alpha', ticker: 'PRED', ens: 'alpha.eth',
-        status: 'active', price: 4.20, change: 12.5, accuracy: 98.2, staked: '5,000 USDC'
-    },
-    {
-        id: '2', name: 'Election Sentiment', ticker: 'VOTE', ens: 'vote-bot.eth',
-        status: 'auction', price: 1.05, change: 0, accuracy: 100, staked: '0 USDC',
-        auctionProgress: 65
-    },
-    {
-        id: '3', name: 'Macro Trends AI', ticker: 'MACRO', ens: 'macro-ai.eth',
-        status: 'slashed', price: 0.45, change: -42.8, accuracy: 64.0, staked: '200 USDC'
-    },
-    {
-        id: '4', name: 'Crypto Native Scout', ticker: 'SCOUT', ens: 'scout.eth',
-        status: 'active', price: 8.90, change: 3.2, accuracy: 94.5, staked: '1,200 USDC'
-    },
-];
+    // Transform DB rows to Agent interface
+    return (data.agents || []).map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        ticker: row.ticker || 'UNK',
+        ens: row.address.slice(0, 6) + '...' + row.address.slice(-4), // Mock ENS for now
+        status: row.is_active ? 'active' : 'slashed', // Simplified status mapping
+        price: 0, // Placeholder
+        change: 0,
+        accuracy: 100, // Placeholder or fetch real trust score if added to DB
+        staked: '0 USDC',
+        image: row.image,
+        description: row.description
+    }));
+};
 
-const TAPE_EVENTS = [
-    { time: '10:42:05', type: 'burn', text: 'Oracle Resolved: FALSE. Reserve Burned.', agent: 'MACRO', val: '-$4,200 🔥' },
-    { time: '10:41:50', type: 'stake', text: 'Staked on "ETH > 3k by Friday"', agent: 'PRED', val: '500 USDC' },
-    { time: '10:41:12', type: 'yellow', text: 'Query Fee paid via Yellow Channel', agent: 'PRED', val: '0.10 USDC' },
-    { time: '10:40:00', type: 'auction', text: 'Uniswap CCA Bid Placed', agent: 'VOTE', val: '1,000 USDC' },
-];
+const syncIndexer = async () => {
+    const res = await fetch('/api/indexer/sync');
+    if (!res.ok) throw new Error('Sync failed');
+    return res.json();
+};
+
 
 // --- SUB-COMPONENTS ---
+
+// --- SUB-COMPONENTS ---
+// ... (TrustGraph, AgentCard components - keeping these as is) [REDACTED FOR BREVITY, ASSUMING THEY ARE ABLE TO BE KEPT OR I WILL INCLUDE THEM IF NEEDED. ACTUALLY I SHOULD PROBABLY INCLUDE THEM TO BE SAFE OR TARGET CAREFULLY]
 
 // 1. The Sparkline (Visual Trust Signal)
 const TrustGraph = ({ status }: { status: AgentStatus }) => {
@@ -180,25 +190,37 @@ const AgentCard = ({ agent }: { agent: Agent }) => {
     );
 };
 
-// --- MAIN COMPONENT ---
-
 export default function VeriBondMarketplaceFinal() {
     const [view, setView] = useState<'live' | 'auctions'>('live');
     const { address, isConnected } = useAccount();
     const { count: claimCount } = useClaimCount();
 
-    // Format address for display
-    const displayAddress = address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '';
+    // Query
+    const { data: agents = [], isLoading, refetch } = useQuery({
+        queryKey: ['agents'],
+        queryFn: fetchAgents
+    });
 
-    // Check if admin
+    // Mutation for Sync
+    const { mutate: sync, isPending: isSyncing } = useMutation({
+        mutationFn: syncIndexer,
+        onSuccess: () => {
+            refetch();
+        }
+    });
+
+    // Auto-sync on mount (Developer Experience: Pull-on-read)
+    React.useEffect(() => {
+        sync();
+    }, []);
+
+    const displayAddress = address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '';
     const isAdmin = address?.toLowerCase() === ADMIN_WALLET.toLowerCase();
 
     return (
         <div className="flex h-screen bg-[#050505] text-zinc-200 font-sans selection:bg-teal-900/30">
-
             {/* 1. LEFT COLUMN: Identity & Nav (Sticky Context) */}
             <aside className="w-72 border-r border-white/5 flex flex-col bg-[#080808] z-20">
-
                 {/* Branding */}
                 <div className="h-16 flex items-center px-6 border-b border-white/5">
                     <div className="font-mono font-bold text-lg tracking-tight text-zinc-100">
@@ -286,29 +308,19 @@ export default function VeriBondMarketplaceFinal() {
                 </div>
             </aside>
 
-            {/* 2. CENTER COLUMN: The Feed (Marketplace) */}
+            {/* center column */}
             <main className="flex-1 flex flex-col min-w-0 bg-[#050505]">
-
                 {/* Header */}
                 <header className="h-16 border-b border-white/5 flex items-center justify-between px-6 sticky top-0 bg-[#050505]/90 backdrop-blur z-10">
                     <div className="flex items-center gap-2 text-zinc-400 text-sm">
                         <Search size={14} />
-                        <input
-                            type="text"
-                            placeholder="Search agents by ENS or Ticker..."
-                            className="bg-transparent outline-none placeholder-zinc-700 text-zinc-200 w-64"
-                        />
+                        <input type="text" placeholder="Search agents..." className="bg-transparent outline-none placeholder-zinc-700 text-zinc-200 w-64" />
                     </div>
-
                     <div className="flex gap-4 text-xs font-mono text-zinc-500">
-                        <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 rounded-full bg-teal-500"></div>
-                            Claims: {claimCount?.toString() ?? '...'}
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-                            Agents: 4
-                        </div>
+                        <button onClick={() => sync()} disabled={isSyncing} className="flex items-center gap-2 hover:text-zinc-300 transition-colors">
+                            <RefreshCw size={12} className={isSyncing ? "animate-spin" : ""} />
+                            {isSyncing ? 'Syncing...' : 'Sync Chain'}
+                        </button>
                     </div>
                 </header>
 
@@ -321,17 +333,22 @@ export default function VeriBondMarketplaceFinal() {
 
                 {/* The List */}
                 <div className="flex-1 overflow-y-auto">
-                    {AGENTS.filter(a => view === 'live' ? a.status !== 'auction' : a.status === 'auction').map(agent => (
-                        <AgentCard key={agent.id} agent={agent as Agent} />
-                    ))}
-                    {/* Duplicates for scroll feel */}
-                    {AGENTS.filter(a => view === 'live' ? a.status !== 'active' : a.status === 'active').map(agent => (
-                        <AgentCard key={agent.id + 'd'} agent={{ ...agent, id: agent.id + 'd' } as Agent} />
-                    ))}
+                    {isLoading ? (
+                        <div className="p-10 text-center text-zinc-600">Loading Market Data...</div>
+                    ) : agents.length === 0 ? (
+                        <div className="p-10 text-center text-zinc-600">
+                            No agents found via Indexer. <br />
+                            <button onClick={() => sync()} className="mt-2 text-zinc-400 underline hover:text-white">Run Sync</button>
+                        </div>
+                    ) : (
+                        agents.map((agent) => (
+                            <AgentCard key={agent.id} agent={agent} />
+                        ))
+                    )}
                 </div>
             </main>
 
-            {/* 3. RIGHT COLUMN: The Tape (VeriBond Loop) */}
+            {/* right column */}
             <aside className="w-80 border-l border-white/5 flex flex-col bg-[#080808] z-20 hidden xl:flex">
 
                 <div className="p-4 border-b border-white/5">
@@ -341,39 +358,8 @@ export default function VeriBondMarketplaceFinal() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto">
-                    {TAPE_EVENTS.map((event, i) => (
-                        <div key={i} className={`
-                 p-4 border-b border-white/5 transition-colors
-                 ${event.type === 'burn' ? 'bg-red-950/10 hover:bg-red-900/20' : 'hover:bg-zinc-900/30'}
-               `}>
-                            {/* Event Header */}
-                            <div className="flex justify-between items-center mb-2">
-                                <div className={`
-                       text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border
-                       ${event.type === 'burn' ? 'text-red-500 border-red-900/50 bg-red-950/20' :
-                                        event.type === 'yellow' ? 'text-yellow-500 border-yellow-900/50 bg-yellow-950/20' :
-                                            event.type === 'stake' ? 'text-teal-500 border-teal-900/50 bg-teal-950/20' :
-                                                'text-blue-500 border-blue-900/50 bg-blue-950/20'}
-                     `}>
-                                    {event.type === 'burn' ? 'Reserve Burn' :
-                                        event.type === 'yellow' ? 'Yellow Pay' :
-                                            event.type === 'stake' ? 'Prediction' : 'CCA Bid'}
-                                </div>
-                                <span className="text-[10px] font-mono text-zinc-600">{event.time}</span>
-                            </div>
-
-                            {/* Event Body */}
-                            <div className="text-xs text-zinc-300 font-medium mb-1">
-                                <span className="text-zinc-500 mr-1">${event.agent}:</span>
-                                {event.text}
-                            </div>
-
-                            {/* Event Value */}
-                            <div className={`text-[10px] font-mono ${event.type === 'burn' ? 'text-red-500 font-bold' : 'text-zinc-500'}`}>
-                                {event.val}
-                            </div>
-                        </div>
-                    ))}
+                    {/* Tape events removed for now or fetch real ones later */}
+                    <div className="p-4 text-center text-zinc-700 text-xs">Live feed connecting...</div>
                 </div>
 
                 {/* Yellow Protocol Integration Badge */}
@@ -389,7 +375,6 @@ export default function VeriBondMarketplaceFinal() {
                     </div>
                 </div>
             </aside>
-
         </div>
     );
 }

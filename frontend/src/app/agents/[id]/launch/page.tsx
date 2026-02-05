@@ -1,12 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { AGENT_TOKEN_FACTORY } from '@/lib/contracts';
 import { AGENT_TOKEN_FACTORY_ABI } from '@/lib/abis';
 import { useAgentIdentity } from '@/hooks/useAgentIdentity';
-import { parseEther, parseUnits } from 'viem';
+import { parseEther } from 'viem';
 import { Loader2, AlertCircle, Rocket, ArrowLeft } from 'lucide-react';
 
 export default function LaunchTokenPage() {
@@ -32,9 +32,74 @@ export default function LaunchTokenPage() {
         hash,
     });
 
+    // --- DEBUG LOGGING ---
+    useEffect(() => {
+        console.log('[LaunchToken] Hash:', hash);
+    }, [hash]);
+
+    useEffect(() => {
+        console.log('[LaunchToken] isConfirmed:', isConfirmed);
+    }, [isConfirmed]);
+
+    useEffect(() => {
+        if (writeError) {
+            console.error('[LaunchToken] Write Error:', writeError);
+        }
+    }, [writeError]);
+    // --- END DEBUG LOGGING ---
+
     const handleLaunch = () => {
         if (!agentId || !name || !symbol) return;
-        const blocks = BigInt(Number(durationHours) * 1800); // ~2s blocks
+        const durationBlocks = BigInt(Number(durationHours) * 1800); // ~2s blocks on Base
+        const tokensAmount = parseEther(tokensForSale);
+
+        // --- CCA Constants (from reference implementation) ---
+        // Floor price in Q96 format (tick -299340, equivalent to ~$0.0001 per token)
+        const FLOOR_PRICE = BigInt('7931558425297600');
+        // Tick spacing (~1% of floor price in Q96)
+        const CCA_TICK_SPACING = BigInt('79315584252976');
+        // Total MPS (milli-bips) = 10,000,000 = 100% of tokens
+        const TOTAL_MPS = BigInt(10_000_000);
+
+        // --- Generate valid auctionStepsData ---
+        // CCA expects: abi.encodePacked(bytes3(mps), bytes5(blocksDelta))
+        // where mps = milli-bips per block, total mps * blocks = TOTAL_MPS
+        const mpsPerBlock = TOTAL_MPS / durationBlocks;
+        const remainder = TOTAL_MPS % durationBlocks;
+
+        let auctionStepsData: `0x${string}`;
+        if (remainder === BigInt(0)) {
+            // Perfect division: single step
+            // bytes3(mpsPerBlock) + bytes5(durationBlocks)
+            const mpsHex = mpsPerBlock.toString(16).padStart(6, '0'); // 3 bytes = 6 hex chars
+            const blocksHex = durationBlocks.toString(16).padStart(10, '0'); // 5 bytes = 10 hex chars
+            auctionStepsData = `0x${mpsHex}${blocksHex}` as `0x${string}`;
+        } else {
+            // Two steps to distribute remainder
+            const mpsPlus1 = mpsPerBlock + BigInt(1);
+            const firstBlocks = remainder;
+            const secondBlocks = durationBlocks - remainder;
+
+            const mps1Hex = mpsPlus1.toString(16).padStart(6, '0');
+            const blocks1Hex = firstBlocks.toString(16).padStart(10, '0');
+            const mps2Hex = mpsPerBlock.toString(16).padStart(6, '0');
+            const blocks2Hex = secondBlocks.toString(16).padStart(10, '0');
+
+            auctionStepsData = `0x${mps1Hex}${blocks1Hex}${mps2Hex}${blocks2Hex}` as `0x${string}`;
+        }
+
+        console.log('[LaunchToken] Launching auction with:', {
+            agentId: agentId.toString(),
+            name,
+            symbol,
+            tokensForSale,
+            minPrice,
+            durationBlocks: durationBlocks.toString(),
+            mpsPerBlock: mpsPerBlock.toString(),
+            remainder: remainder.toString(),
+            factoryAddress: AGENT_TOKEN_FACTORY,
+            auctionStepsData
+        });
 
         writeContract({
             address: AGENT_TOKEN_FACTORY,
@@ -44,12 +109,12 @@ export default function LaunchTokenPage() {
                 agentId,
                 name,
                 symbol,
-                parseEther(tokensForSale),
-                BigInt(0),
-                parseUnits(minPrice, 6),
-                blocks,
-                BigInt(200),
-                "0x"
+                tokensAmount,
+                BigInt(0), // startPrice (unused, for display only)
+                FLOOR_PRICE, // minPrice in Q96 format
+                durationBlocks,
+                CCA_TICK_SPACING, // tickSpacing in Q96 format
+                auctionStepsData
             ],
         });
     };

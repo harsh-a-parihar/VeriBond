@@ -291,16 +291,82 @@ export const CCA_ABI = [
         outputs: [{ type: 'uint256' }],
     },
     {
+        name: 'floorPrice',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'tickSpacing',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'MAX_BID_PRICE',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'claimBlock',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint64' }],
+    },
+    {
+        // 4-arg version (used by reference implementation)
         name: 'submitBid',
+        type: 'function',
+        stateMutability: 'payable',
+        inputs: [
+            { name: '_maxPrice', type: 'uint256' },
+            { name: '_amount', type: 'uint128' },
+            { name: '_owner', type: 'address' },
+            { name: '_hookData', type: 'bytes' },
+        ],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'claimTokens',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [{ name: '_bidId', type: 'uint256' }],
+        outputs: [],
+    },
+    {
+        name: 'claimTokensBatch',
         type: 'function',
         stateMutability: 'nonpayable',
         inputs: [
-            { name: 'price', type: 'uint256' },
-            { name: 'amount', type: 'uint256' },
-            { name: 'recipient', type: 'address' },
-            { name: 'hint', type: 'uint256' },
-            { name: 'data', type: 'bytes' },
+            { name: '_owner', type: 'address' },
+            { name: '_bidIds', type: 'uint256[]' },
         ],
         outputs: [],
+    },
+    // Event for tracking bid IDs
+    {
+        name: 'BidSubmitted',
+        type: 'event',
+        inputs: [
+            { name: 'bidId', type: 'uint256', indexed: true },
+            { name: 'owner', type: 'address', indexed: true },
+            { name: 'maxPrice', type: 'uint256', indexed: false },
+            { name: 'amount', type: 'uint128', indexed: false },
+        ],
+    },
+    {
+        name: 'BidExited',
+        type: 'event',
+        inputs: [
+            { name: 'bidId', type: 'uint256', indexed: true },
+            { name: 'owner', type: 'address', indexed: true },
+            { name: 'tokensFilled', type: 'uint256', indexed: false },
+            { name: 'currencyRefunded', type: 'uint256', indexed: false },
+        ],
     },
 ] as const;

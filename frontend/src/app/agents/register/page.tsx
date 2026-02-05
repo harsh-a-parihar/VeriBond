@@ -261,6 +261,10 @@ export default function RegisterAgentPage() {
 
             if (id) {
                 setAgentId(id.toString());
+
+                // Trigger Indexer Sync immediately
+                fetch('/api/indexer/sync').then(() => console.log('[Register] Sync triggered')).catch(console.error);
+
                 setStep('success'); // Direct success
             } else {
                 console.error('[Register] Failed to extract Agent ID from receipt!');
