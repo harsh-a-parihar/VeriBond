@@ -190,3 +190,117 @@ export const ERC20_ABI = [
         outputs: [{ type: 'uint8' }],
     },
 ] as const;
+
+// OwnerBadge ABI (Soulbound token for owner accountability)
+export const OWNER_BADGE_ABI = [
+    // Read functions
+    {
+        name: 'hasBadge',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'owner', type: 'address' }],
+        outputs: [{ type: 'bool' }],
+    },
+    {
+        name: 'isBlacklisted',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'owner', type: 'address' }],
+        outputs: [{ type: 'bool' }],
+    },
+    {
+        name: 'ownerToBadge',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'owner', type: 'address' }],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'slashCount',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'badgeId', type: 'uint256' }],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'getBadgeId',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'owner', type: 'address' }],
+        outputs: [{ type: 'uint256' }],
+    },
+    // Write functions
+    {
+        name: 'mint',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [],
+        outputs: [],
+    },
+] as const;
+
+// Agent Token Factory ABI
+export const AGENT_TOKEN_FACTORY_ABI = [
+    {
+        name: 'launchAuction',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [
+            { name: 'agentId', type: 'uint256' },
+            { name: 'name', type: 'string' },
+            { name: 'symbol', type: 'string' },
+            { name: 'tokensForSale', type: 'uint256' },
+            { name: 'startPrice', type: 'uint256' },
+            { name: 'minPrice', type: 'uint256' },
+            { name: 'durationBlocks', type: 'uint256' },
+            { name: 'tickSpacing', type: 'uint256' },
+            { name: 'auctionStepsData', type: 'bytes' },
+        ],
+        outputs: [],
+    },
+    {
+        name: 'getAgentAuction',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'agentId', type: 'uint256' }],
+        outputs: [{ type: 'address' }],
+    },
+    {
+        name: 'getAgentToken',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'agentId', type: 'uint256' }],
+        outputs: [{ type: 'address' }],
+    },
+] as const;
+
+// Continuous Clearing Auction (CCA) ABI
+export const CCA_ABI = [
+    {
+        name: 'clearingPrice',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'totalCleared',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'submitBid',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [
+            { name: 'price', type: 'uint256' },
+            { name: 'amount', type: 'uint256' },
+            { name: 'recipient', type: 'address' },
+            { name: 'hint', type: 'uint256' },
+            { name: 'data', type: 'bytes' },
+        ],
+        outputs: [],
+    },
+] as const;

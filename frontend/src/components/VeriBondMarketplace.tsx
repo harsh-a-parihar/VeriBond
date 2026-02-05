@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useAccount } from 'wagmi';
 import { useAgentStats, useClaimCount } from '@/hooks';
@@ -63,7 +64,6 @@ const TAPE_EVENTS = [
 // 1. The Sparkline (Visual Trust Signal)
 const TrustGraph = ({ status }: { status: AgentStatus }) => {
     const color = status === 'slashed' ? '#ef4444' : status === 'auction' ? '#3b82f6' : '#14b8a6';
-    // If slashed, show a crash. If active, show growth.
     const points = status === 'slashed'
         ? [80, 82, 85, 84, 40, 35, 30]
         : [20, 25, 22, 30, 35, 38, 45];
@@ -86,75 +86,95 @@ const TrustGraph = ({ status }: { status: AgentStatus }) => {
 
 // 2. The Agent Card
 const AgentCard = ({ agent }: { agent: Agent }) => {
+    const router = useRouter();
     const isAuction = agent.status === 'auction';
     const isSlashed = agent.status === 'slashed';
 
     return (
         <div className={`
-      group relative flex items-center justify-between p-5 border-b border-white/5 
+      group relative flex flex-col border-b border-white/5 
       hover:bg-zinc-900/40 transition-all cursor-pointer
       ${isSlashed ? 'bg-red-950/5' : ''}
     `}>
-            {/* Left: Identity (ERC-8004) */}
-            <div className="flex items-center gap-4 w-[35%]">
-                <div className={`
-          w-10 h-10 rounded-lg border flex items-center justify-center text-xs font-bold font-mono
-          ${isAuction ? 'border-blue-900 bg-blue-950/20 text-blue-500' :
-                        isSlashed ? 'border-red-900 bg-red-950/20 text-red-500' :
-                            'border-zinc-800 bg-zinc-900 text-zinc-400'}
-        `}>
-                    {agent.ticker.slice(0, 2)}
-                </div>
-                <div>
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-zinc-200">{agent.name}</span>
-                        {isSlashed && <AlertTriangle size={12} className="text-red-500" />}
+            {/* Main Row */}
+            <div className="flex items-center justify-between p-5">
+                {/* Left: Identity (ERC-8004) */}
+                <div className="flex items-center gap-4 w-[35%]">
+                    <div className={`
+            w-10 h-10 rounded-lg border flex items-center justify-center text-xs font-bold font-mono
+            ${isAuction ? 'border-blue-900 bg-blue-950/20 text-blue-500' :
+                            isSlashed ? 'border-red-900 bg-red-950/20 text-red-500' :
+                                'border-zinc-800 bg-zinc-900 text-zinc-400'}
+            `}>
+                        {agent.ticker.slice(0, 2)}
                     </div>
-                    <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 font-mono">
-                        <span className="text-zinc-400">{agent.ens}</span>
-                        <span>•</span>
-                        <span>#{agent.id.padStart(4, '0')}</span>
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-zinc-200">{agent.name}</span>
+                            {isSlashed && <AlertTriangle size={12} className="text-red-500" />}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 font-mono">
+                            <span className="text-zinc-400">{agent.ens}</span>
+                            <span>•</span>
+                            <span>#{agent.id.padStart(4, '0')}</span>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            {/* Middle: Status / Mechanics */}
-            <div className="w-[30%] flex flex-col justify-center">
-                {isAuction ? (
-                    <div className="w-full max-w-[140px]">
-                        <div className="flex justify-between text-[10px] text-blue-400 mb-1 uppercase tracking-wider font-bold">
-                            <span>CCA Auction</span>
-                            <span>{agent.auctionProgress}%</span>
-                        </div>
-                        <div className="h-1.5 w-full bg-blue-950 rounded-full overflow-hidden">
-                            <div className="h-full bg-blue-500" style={{ width: `${agent.auctionProgress}%` }}></div>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="flex items-center gap-4">
-                        <div>
-                            <div className="text-[10px] text-zinc-600 uppercase">Staked</div>
-                            <div className="text-xs font-mono text-zinc-300">{agent.staked}</div>
-                        </div>
-                        <div>
-                            <div className="text-[10px] text-zinc-600 uppercase">Trust</div>
-                            <div className={`text-xs font-mono font-bold ${agent.accuracy > 90 ? 'text-teal-500' : 'text-red-500'}`}>
-                                {agent.accuracy}%
+                {/* Middle: Status / Mechanics */}
+                <div className="w-[30%] flex flex-col justify-center">
+                    {isAuction ? (
+                        <div className="w-full max-w-[140px]">
+                            <div className="flex justify-between text-[10px] text-blue-400 mb-1 uppercase tracking-wider font-bold">
+                                <span>CCA Auction</span>
+                                <span>{agent.auctionProgress}%</span>
+                            </div>
+                            <div className="h-1.5 w-full bg-blue-950 rounded-full overflow-hidden">
+                                <div className="h-full bg-blue-500" style={{ width: `${agent.auctionProgress}%` }}></div>
                             </div>
                         </div>
-                    </div>
-                )}
-            </div>
+                    ) : (
+                        <div className="flex items-center gap-4">
+                            <div>
+                                <div className="text-[10px] text-zinc-600 uppercase">Staked</div>
+                                <div className="text-xs font-mono text-zinc-300">{agent.staked}</div>
+                            </div>
+                            <div>
+                                <div className="text-[10px] text-zinc-600 uppercase">Trust</div>
+                                <div className={`text-xs font-mono font-bold ${agent.accuracy > 90 ? 'text-teal-500' : 'text-red-500'}`}>
+                                    {agent.accuracy}%
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
 
-            {/* Right: Price & Graph */}
-            <div className="w-[35%] flex items-center justify-end gap-6">
-                <TrustGraph status={agent.status} />
-                <div className="text-right min-w-[60px]">
-                    <div className="text-sm font-mono text-zinc-200">${agent.price.toFixed(2)}</div>
-                    <div className={`text-[10px] font-mono ${agent.change >= 0 ? 'text-teal-500' : 'text-red-500'}`}>
-                        {agent.change > 0 ? '+' : ''}{agent.change}%
+                {/* Right: Price & Graph */}
+                <div className="w-[35%] flex items-center justify-end gap-6">
+                    <TrustGraph status={agent.status} />
+                    <div className="text-right min-w-[60px]">
+                        <div className="text-sm font-mono text-zinc-200">${agent.price.toFixed(2)}</div>
+                        <div className={`text-[10px] font-mono ${agent.change >= 0 ? 'text-teal-500' : 'text-red-500'}`}>
+                            {agent.change > 0 ? '+' : ''}{agent.change}%
+                        </div>
                     </div>
                 </div>
+            </div>
+
+            {/* Action Bar (Buttons) */}
+            <div className="hidden group-hover:flex px-5 pb-4 gap-3 border-t border-white/5 pt-3 mx-5 mt-[-10px]">
+                <button
+                    onClick={(e) => { e.stopPropagation(); router.push(`/agents/${agent.id}/launch`); }}
+                    className="flex-1 py-1.5 text-[10px] font-medium uppercase tracking-wider border border-zinc-800 hover:bg-zinc-900 rounded text-zinc-400 transition-colors"
+                >
+                    Launch Token
+                </button>
+                <button
+                    onClick={(e) => { e.stopPropagation(); router.push(`/agents/${agent.id}/auction`); }}
+                    className="flex-1 py-1.5 text-[10px] font-medium uppercase tracking-wider border border-blue-900/30 bg-blue-950/10 hover:bg-blue-900/20 rounded text-blue-400 transition-colors"
+                >
+                    View CCA Auction
+                </button>
             </div>
         </div>
     );
