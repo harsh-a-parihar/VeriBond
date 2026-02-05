@@ -36,6 +36,13 @@ class Settings(BaseSettings):
         description="Sentence-transformers model or OpenAI model name",
     )
     embedding_dim: int = Field(default=384, ge=1, le=4096, description="Embedding dimension")
+    embed_batch_size: int = Field(default=64, ge=1, le=512, description="Batch size for embedding")
+
+    # Chroma (vector store)
+    chroma_collection_name: str = Field(
+        default="markets",
+        description="Chroma collection name for market embeddings",
+    )
 
     # Clustering
     cluster_ratio: float = Field(
@@ -43,6 +50,12 @@ class Settings(BaseSettings):
         ge=0.01,
         le=1.0,
         description="K = floor(N * cluster_ratio); paper uses N/10",
+    )
+    max_clusters: int = Field(
+        default=1000,
+        ge=1,
+        le=50000,
+        description="Cap on K so clustering stays fast for large N",
     )
 
     # LLM (optional; for labeling and relationship discovery)
@@ -76,6 +89,11 @@ class Settings(BaseSettings):
         if self.processed_data_dir.is_absolute():
             return self.processed_data_dir
         return self.data_dir / self.processed_data_dir.name
+
+    @property
+    def chroma_persist_path(self) -> Path:
+        """Path for ChromaDB persistent storage."""
+        return self.processed_data_path / "chroma"
 
 
 def get_settings() -> Settings:

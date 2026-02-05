@@ -76,6 +76,38 @@ print(len(m), 'markets loaded and saved.')
 
 3. Markets are written to **`data/processed/veribond_semantic.db`** (SQLite). You can limit the first run with `nrows=20000` for a quick test.
 
+### 6. Stage 2: Embed and cluster (after ingest)
+
+From repo root with venv activated:
+
+**Embed** — generate embeddings and store in ChromaDB:
+
+```bash
+export PYTHONPATH=.
+python -c "
+from semantic_agent.config import get_settings
+from semantic_agent.pipeline.embed import run_embed_and_store
+s = get_settings()
+n = run_embed_and_store(s.database_url)
+print(n, 'markets embedded and stored in Chroma.')
+"
+```
+
+**Cluster** — run K-means on embeddings and persist cluster assignments:
+
+```bash
+export PYTHONPATH=.
+python -c "
+from semantic_agent.config import get_settings
+from semantic_agent.pipeline.cluster import run_cluster_and_store
+s = get_settings()
+clusters = run_cluster_and_store(s.database_url)
+print(len(clusters), 'clusters written to DB.')
+"
+```
+
+Embeddings live in **`data/processed/chroma/`**; cluster assignments are in the same SQLite DB (`clusters` and `market_clusters` tables). Config: `embedding_model`, `embed_batch_size`, `chroma_collection_name`, `cluster_ratio` (K ≈ N × cluster_ratio).
+
 ## Project layout
 
 ```
@@ -101,6 +133,10 @@ data/
 
 See **Getting the data** above. Then run the ingest snippet; markets are saved to `data/processed/veribond_semantic.db`.
 
+### Embed and cluster (after ingest)
+
+See **Stage 2** above. Run embed first (writes to Chroma), then cluster (reads Chroma, writes clusters to SQLite).
+
 ### Tests
 
 ```bash
@@ -119,6 +155,6 @@ mypy semantic_agent
 
 ## Next steps
 
-- Add Polymarket / Dune / Allium adapters (Section 14 of the plan).
-- Implement embed + cluster + label + relationship_discovery (MCP tools).
-- Expose FastAPI and MCP server.
+- Cluster labeling (LLM): assign category per cluster (politics, crypto, sports, …).
+- Relationship discovery (LLM): per-cluster relation pairs (same/opposite outcome).
+- Evaluation and API / MCP server.

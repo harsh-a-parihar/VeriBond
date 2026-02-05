@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 from semantic_agent.models.market import Market, ResolvedOutcome
+from semantic_agent.logging_utils import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ def load_markets_from_csv(
     Returns:
         List of Market models with derived resolved_outcome, duration_days, is_binary.
     """
+    configure_logging()
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"CSV not found: {path}")
@@ -193,6 +195,7 @@ def load_from_csv_and_save(
     Load markets from CSV and write them to the SQLite store.
     Returns the same list of Market models (for chaining or inspection).
     """
+    configure_logging()
     from semantic_agent.store import init_schema, write_markets
 
     markets = load_markets_from_csv(
