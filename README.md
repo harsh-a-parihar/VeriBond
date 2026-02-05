@@ -71,14 +71,23 @@ This shows the step-by-step process for a single prediction.
 
 ## Installation and Setup
 
-1. Clone the repo: `git clone https://github.com/harsh-a-parihar/VeriBond.git`
-2. Install dependencies: `npm install` (frontend) and `pip install -r requirements.txt` (backend).
-3. Set environment variables: Copy `.env.example` to `.env` and fill in API keys (e.g., Chainlink, LLM providers).
-4. Deploy contracts: `hardhat deploy --network testnet`
-5. Run locally: `npm run start` (UI) and `python app.py` (backend).
-6. Test: Use the dashboard to create a sample claim and simulate settlement.
+### Semantic agent (Python, Stage 1: Ingest)
 
-For full deployment, see [docs/deployment.md](docs/deployment.md).
+1. Clone the repo: `git clone https://github.com/harsh-a-parihar/VeriBond.git`
+2. **Python 3.11+** required. From repo root:
+   - `python3 -m venv .venv`
+   - Activate: `source .venv/bin/activate` (macOS/Linux) or `.venv\Scripts\activate` (Windows)
+   - `pip install -e .` (or `pip install -r requirements.txt`)
+3. **Get the data** (not in repo): Download [Polymarket Prediction Markets](https://www.kaggle.com/datasets/ismetsemedov/polymarket-prediction-markets) from Kaggle and put `polymarket_markets.csv` in `data/raw/`.
+4. Run Stage 1 ingest (see [semantic_agent/README.md](semantic_agent/README.md) for the exact Python snippet).
+5. Markets are written to SQLite at `data/processed/veribond_semantic.db`.
+
+### Full stack (later)
+
+- Set environment variables: Copy `.env.example` to `.env` and fill in API keys (e.g., Chainlink, LLM providers).
+- Deploy contracts: `hardhat deploy --network testnet`
+- Run locally: `npm run start` (UI) and `python app.py` (backend).
+- For full deployment, see [docs/deployment.md](docs/deployment.md) when available.
 
 ## Contributing
 

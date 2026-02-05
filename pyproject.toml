@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "veribond"
+version = "0.1.0"
+description = "VeriBond semantic agent: multi-agent pipeline for prediction market clustering and relationship discovery"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "VeriBond Team" }]
+dependencies = [
+    "fastapi>=0.109,<1",
+    "uvicorn[standard]>=0.27,<1",
+    "pydantic>=2.5,<3",
+    "pydantic-settings>=2.1,<3",
+    "pandas>=2.1,<3",
+    "httpx>=0.26,<1",
+    "numpy>=1.26,<2",
+    "scikit-learn>=1.4,<2",
+    "sentence-transformers>=2.2,<3",
+    "openai>=1.12,<2",
+    "python-dotenv>=1.0,<2",
+    "chromadb>=0.4,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4,<8",
+    "pytest-cov>=4.1,<5",
+    "black>=24.1,<25",
+    "ruff>=0.2,<1",
+    "mypy>=1.8,<2",
+]
+
+[project.scripts]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["semantic_agent*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+exclude = '''
+/(\.git|\.venv|build|dist)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+exclude = [".git", ".venv", "build", "dist"]
+
+[tool.ruff.isort]
+known-first-party = ["semantic_agent"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+filterwarnings = ["ignore::DeprecationWarning"]

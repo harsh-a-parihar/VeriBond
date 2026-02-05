@@ -1,0 +1,67 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+penv/
+ENV/
+env/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Distribution / build
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Testing / coverage
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Data — do not commit CSVs or processed DB; download separately (see README)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Local DB and vector store
+*.db
+*.sqlite
+chroma/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Temporary
+tmp/
+temp/
+*.tmp
