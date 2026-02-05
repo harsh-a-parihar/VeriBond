@@ -66,6 +66,25 @@ def init_schema(database_url: str) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_id TEXT NOT NULL,
+                market_id_i TEXT NOT NULL,
+                market_id_j TEXT NOT NULL,
+                question_i TEXT NOT NULL,
+                question_j TEXT NOT NULL,
+                is_same_outcome INTEGER NOT NULL,
+                confidence_score REAL NOT NULL,
+                rationale TEXT,
+                UNIQUE(cluster_id, market_id_i, market_id_j),
+                FOREIGN KEY (cluster_id) REFERENCES clusters(cluster_id),
+                FOREIGN KEY (market_id_i) REFERENCES markets(id),
+                FOREIGN KEY (market_id_j) REFERENCES markets(id)
+            )
+            """
+        )
         conn.commit()
         logger.info("Schema initialized at %s", path)
     finally:
@@ -367,5 +386,59 @@ def update_cluster_labels(
         )
         conn.commit()
         logger.info("Updated labels for %d clusters", len(rows))
+    finally:
+        conn.close()
+
+
+def write_relations_for_cluster(
+    database_url: str,
+    *,
+    cluster_id: str,
+    relations: list["MarketRelation"],
+) -> None:
+    """Replace all relations for a cluster with the provided list."""
+    # Local import to avoid circular dependency
+    from semantic_agent.models.market import MarketRelation
+
+    configure_logging()
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        logger.warning("Database not found at %s", path)
+        return
+    init_schema(database_url)
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("DELETE FROM relations WHERE cluster_id = ?", (cluster_id,))
+        if relations:
+            rows = [
+                (
+                    cluster_id,
+                    r.market_id_i,
+                    r.market_id_j,
+                    r.question_i,
+                    r.question_j,
+                    1 if r.is_same_outcome else 0,
+                    float(r.confidence_score),
+                    r.rationale,
+                )
+                for r in relations
+            ]
+            conn.executemany(
+                """
+                INSERT INTO relations (
+                    cluster_id,
+                    market_id_i,
+                    market_id_j,
+                    question_i,
+                    question_j,
+                    is_same_outcome,
+                    confidence_score,
+                    rationale
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+        conn.commit()
+        logger.info("Wrote %d relations for cluster %s", len(relations), cluster_id)
     finally:
         conn.close()
