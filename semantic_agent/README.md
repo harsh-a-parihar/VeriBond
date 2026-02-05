@@ -132,6 +132,49 @@ print(len(labels), 'clusters labeled.')
 You can override limits per run:
 - `run_label_clusters(..., max_clusters=50, sample_size=25)`
 
+### 8. Stage 4: Relationship discovery (LLM)
+
+This discovers semantic relationships between markets **within each cluster** and writes them to a `relations` table:
+
+```text
+relations:
+  cluster_id
+  market_id_i, market_id_j
+  question_i, question_j
+  is_same_outcome   # true = YES/YES or NO/NO, false = YES/NO
+  confidence_score  # [0, 1]
+  rationale
+```
+
+1. Ensure clusters and labels exist (run Stage 2 + Stage 3 first).
+
+2. Run relationship discovery (defaults: up to 100 labeled clusters, 40 markets per cluster, 60 relations per cluster):
+
+```bash
+export PYTHONPATH=.
+python -c "
+from semantic_agent.config import get_settings
+from semantic_agent.pipeline.relations import run_discover_relations
+s = get_settings()
+stats = run_discover_relations(s.database_url)
+print('Clusters processed:', len(stats))
+print('Total relations:', sum(stats.values()))
+"
+```
+
+You can override per run, e.g.:
+
+```python
+run_discover_relations(
+    s.database_url,
+    max_clusters=20,
+    max_markets_per_cluster=30,
+    max_relations_per_cluster=40,
+    only_labeled=True,
+    only_resolved=False,
+)
+```
+
 ## Project layout
 
 ```

@@ -77,6 +77,24 @@ class Settings(BaseSettings):
         le=10000,
         description="Max clusters to label per run (safety + cost control)",
     )
+    relations_max_clusters: int = Field(
+        default=100,
+        ge=1,
+        le=10000,
+        description="Max clusters for relationship discovery per run",
+    )
+    relations_max_markets_per_cluster: int = Field(
+        default=40,
+        ge=2,
+        le=200,
+        description="Max markets per cluster to send to the LLM for relations",
+    )
+    relations_max_relations_per_cluster: int = Field(
+        default=60,
+        ge=1,
+        le=200,
+        description="Soft cap on number of relations per cluster (enforced in prompt)",
+    )
 
     # Polymarket / APIs
     polymarket_api_base: str = Field(
