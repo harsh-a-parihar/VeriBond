@@ -1,0 +1,22 @@
+{
+    "name": "veribond-scripts",
+    "version": "1.0.0",
+    "description": "Scripts for VeriBond ERC-8004 integration",
+    "type": "module",
+    "scripts": {
+        "register-agent": "tsx register-agent.ts",
+        "register-direct": "tsx register-direct.ts",
+        "test-claim-flow": "tsx test-claim-flow.ts",
+        "set-agent-wallet": "tsx set-agent-wallet.ts"
+    },
+    "dependencies": {
+        "agent0-sdk": "^1.5.2",
+        "dotenv": "^16.4.5",
+        "viem": "^2.21.0"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "tsx": "^4.7.0",
+        "typescript": "^5.4.0"
+    }
+}
