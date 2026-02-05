@@ -11,6 +11,11 @@ penv/
 ENV/
 env/
 
+# Dependencies (Node)
+node_modules/
+.pnp/
+.pnp.js
+
 # Environment and secrets
 .env
 .env.local
@@ -30,6 +35,14 @@ dist/
 *.egg-info/
 *.egg
 
+# Build outputs (contracts, frontend)
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/lib/
+frontend/.next/
+frontend/out/
+
 # Testing / coverage
 .coverage
 .pytest_cache/
@@ -37,6 +50,12 @@ htmlcov/
 .tox/
 .mypy_cache/
 .ruff_cache/
+coverage/
+lcov.info
+
+# Agent/Brain docs (private planning docs)
+.agent/
+.gemini/
 
 # Data — do not commit CSVs or processed DB; download separately (see README)
 data/raw/*
@@ -65,3 +84,6 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Misc
+*.pem
