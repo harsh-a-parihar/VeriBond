@@ -91,6 +91,28 @@ def init_schema(database_url: str) -> None:
         conn.close()
 
 
+def clear_derived_data(database_url: str) -> None:
+    """
+    Remove clusters, market_cluster assignments, and relations.
+    Leaves markets table intact. Use before a full pipeline re-run so
+    embed/cluster/label/relations start from current markets only.
+    """
+    configure_logging()
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        logger.info("Database not found at %s; nothing to clear", path)
+        return
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("DELETE FROM relations")
+        conn.execute("DELETE FROM market_clusters")
+        conn.execute("DELETE FROM clusters")
+        conn.commit()
+        logger.info("Cleared relations, market_clusters, and clusters at %s", path)
+    finally:
+        conn.close()
+
+
 def write_markets(markets: list[Market], database_url: str) -> None:
     """
     Insert or replace markets into the markets table.
@@ -410,6 +432,13 @@ def write_relations_for_cluster(
     try:
         conn.execute("DELETE FROM relations WHERE cluster_id = ?", (cluster_id,))
         if relations:
+            # Deduplicate by (market_id_i, market_id_j); LLM may return duplicate pairs
+            seen: dict[tuple[str, str], MarketRelation] = {}
+            for r in relations:
+                key = (r.market_id_i, r.market_id_j)
+                if key not in seen:
+                    seen[key] = r
+            relations_deduped = list(seen.values())
             rows = [
                 (
                     cluster_id,
@@ -421,7 +450,7 @@ def write_relations_for_cluster(
                     float(r.confidence_score),
                     r.rationale,
                 )
-                for r in relations
+                for r in relations_deduped
             ]
             conn.executemany(
                 """
@@ -439,6 +468,67 @@ def write_relations_for_cluster(
                 rows,
             )
         conn.commit()
-        logger.info("Wrote %d relations for cluster %s", len(relations), cluster_id)
+        n_written = len(relations_deduped) if relations else 0
+        if relations and len(relations_deduped) < len(relations):
+            logger.info(
+                "Wrote %d relations for cluster %s (%d duplicates skipped)",
+                n_written,
+                cluster_id,
+                len(relations) - len(relations_deduped),
+            )
+        else:
+            logger.info("Wrote %d relations for cluster %s", n_written, cluster_id)
     finally:
         conn.close()
+
+
+def get_cluster_ids_with_relations(database_url: str) -> set[str]:
+    """Return set of cluster_ids that have at least one relation (for skip-when-resuming)."""
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        return set()
+    conn = sqlite3.connect(str(path))
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT cluster_id FROM relations"
+        ).fetchall()
+        return {r[0] for r in rows}
+    finally:
+        conn.close()
+
+
+def read_relations(database_url: str) -> list[tuple[str, "MarketRelation"]]:
+    """
+    Read all relations from the relations table.
+    Returns list of (cluster_id, MarketRelation) for evaluation and breakdown by cluster.
+    """
+    from semantic_agent.models.market import MarketRelation
+
+    configure_logging()
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        logger.warning("Database not found at %s", path)
+        return []
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT cluster_id, market_id_i, market_id_j, question_i, question_j, "
+            "is_same_outcome, confidence_score, rationale FROM relations"
+        ).fetchall()
+    finally:
+        conn.close()
+    out: list[tuple[str, MarketRelation]] = []
+    for row in rows:
+        rel = MarketRelation(
+            question_i=row["question_i"] or "",
+            question_j=row["question_j"] or "",
+            market_id_i=row["market_id_i"],
+            market_id_j=row["market_id_j"],
+            is_same_outcome=bool(row["is_same_outcome"]),
+            confidence_score=float(row["confidence_score"]),
+            rationale=(row["rationale"] or "") or "",
+        )
+        out.append((row["cluster_id"], rel))
+    logger.info("Read %d relations from %s", len(out), path)
+    return out

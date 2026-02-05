@@ -95,6 +95,24 @@ class Settings(BaseSettings):
         le=200,
         description="Soft cap on number of relations per cluster (enforced in prompt)",
     )
+    relations_parallel_workers: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Number of clusters to process in parallel for relation discovery",
+    )
+
+    # Evaluation (compare predicted relations to resolved outcomes)
+    eval_min_confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Only evaluate relations with confidence >= this (0 = all)",
+    )
+    eval_confidence_buckets: list[float] = Field(
+        default=[0.5, 0.7, 0.9],
+        description="Confidence bucket boundaries for breakdown (e.g. [0.5, 0.7, 0.9])",
+    )
 
     # Polymarket / APIs
     polymarket_api_base: str = Field(

@@ -76,6 +76,19 @@ print(len(m), 'markets loaded and saved.')
 
 3. Markets are written to **`data/processed/veribond_semantic.db`** (SQLite). You can limit the first run with `nrows=20000` for a quick test.
 
+**Resolved outcome (for evaluation):** Ingest derives `resolved_outcome` (YES/NO) from either (1) a **`tokens`** column (JSON list with `outcome` and `winner`), or (2) **Kaggle Polymarket CSV** columns: `umaResolutionStatus == "resolved"` plus `outcomePrices` and `outcomes` (winner = index of max price; mapped to YES/NO by position). For evaluation to have ground truth, run **full ingest** (no `nrows`) so all markets get resolution when available in the CSV.
+
+**Admin dashboard:** For a UI to run the pipeline, upload CSVs, and view logs, see **`admin/`** and run the API + dashboard (see `admin/README.md`).
+
+**Full pipeline (whole data):** To run from a clean state on the full CSV (reset → ingest → embed → cluster → label → relations → evaluate):
+
+```bash
+export PYTHONPATH=.
+python -m semantic_agent.pipeline.run_full
+```
+
+This clears Chroma and SQLite derived data (clusters, relations), ingests from `data/raw/polymarket_markets.csv` with no row limit, then runs embed, cluster, label, relations, and evaluation. CSV path and DB URL come from config (e.g. `.env`). For a reset-only step without re-running ingest: `from semantic_agent.pipeline import run_reset; run_reset(settings.database_url)`.
+
 ### 6. Stage 2: Embed and cluster (after ingest)
 
 From repo root with venv activated:
