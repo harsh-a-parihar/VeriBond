@@ -187,6 +187,79 @@ def read_markets(database_url: str) -> list[Market]:
     return markets
 
 
+def read_markets_by_ids(database_url: str, market_ids: list[str]) -> list[Market]:
+    """Read a subset of markets by id (preserves DB parsing rules)."""
+    configure_logging()
+    if not market_ids:
+        return []
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        logger.warning("Database not found at %s", path)
+        return []
+    placeholders = ",".join(["?"] * len(market_ids))
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM markets WHERE id IN ({placeholders})",
+            tuple(market_ids),
+        ).fetchall()
+    finally:
+        conn.close()
+    # Reuse the same parsing logic as read_markets
+    markets: list[Market] = []
+    for row in rows:
+        tags_raw = row["tags"]
+        if isinstance(tags_raw, str) and tags_raw:
+            try:
+                tags = json.loads(tags_raw)
+            except json.JSONDecodeError:
+                tags = []
+        else:
+            tags = []
+        start_time = row["start_time"]
+        end_time = row["end_time"]
+        if start_time:
+            try:
+                start_time = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            except Exception:
+                start_time = None
+        else:
+            start_time = None
+        if end_time:
+            try:
+                end_time = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+            except Exception:
+                end_time = None
+        else:
+            end_time = None
+        description = row["description"] or None
+        if description == "":
+            description = None
+        slug = row["slug"] or None
+        if slug == "":
+            slug = None
+        resolved = row["resolved_outcome"]
+        if resolved not in ("YES", "NO"):
+            resolved = None
+        markets.append(
+            Market(
+                id=row["id"],
+                question=row["question"],
+                description=description,
+                start_time=start_time,
+                end_time=end_time,
+                duration_days=row["duration_days"],
+                tags=tags,
+                resolved_outcome=resolved,
+                is_binary=bool(row["is_binary"]),
+                slug=slug,
+                source=row["source"] or "csv",
+            )
+        )
+    return markets
+
+
 def write_clusters(clusters: list[Cluster], database_url: str) -> None:
     """
     Write clusters and market-cluster assignments to the database.
@@ -265,3 +338,34 @@ def read_clusters(database_url: str) -> list[Cluster]:
         )
     logger.info("Read %d clusters from %s", len(clusters), path)
     return clusters
+
+
+def update_cluster_labels(
+    database_url: str,
+    *,
+    labels: dict[str, tuple[str, str | None]],
+) -> None:
+    """Update cluster category / rationale without touching assignments."""
+    configure_logging()
+    if not labels:
+        logger.warning("update_cluster_labels called with empty labels")
+        return
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        logger.warning("Database not found at %s", path)
+        return
+    init_schema(database_url)
+    conn = sqlite3.connect(str(path))
+    try:
+        rows = [
+            (category, (rationale or ""), cluster_id)
+            for cluster_id, (category, rationale) in labels.items()
+        ]
+        conn.executemany(
+            "UPDATE clusters SET category = ?, label_rationale = ? WHERE cluster_id = ?",
+            rows,
+        )
+        conn.commit()
+        logger.info("Updated labels for %d clusters", len(rows))
+    finally:
+        conn.close()
