@@ -4,14 +4,14 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts } from 'wagmi';
-import { formatDistanceToNow, isPast } from 'date-fns';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts, useReadContract } from 'wagmi';
+import { formatDistanceToNow, isPast, addSeconds } from 'date-fns';
 import { useClaimDetails } from '@/hooks';
-import { CONTRACTS } from '@/lib/contracts';
-import { TRUTH_STAKE_ABI } from '@/lib/abis';
+import { CONTRACTS, UMA_RESOLVER, UMA_TESTNET_ERC20 } from '@/lib/contracts';
+import { TRUTH_STAKE_ABI, UMA_RESOLVER_ABI, ERC20_ABI } from '@/lib/abis';
 import {
     ArrowLeft, Cpu, Clock, CheckCircle2, XCircle,
-    Loader2, AlertTriangle, User, Lock
+    Loader2, AlertTriangle, User, Lock, Zap, Timer, Shield
 } from 'lucide-react';
 
 // Format USDC amount
@@ -56,17 +56,68 @@ export default function ClaimDetailPage() {
         ],
     });
 
-    // Resolve transaction
+    // UMA assertion status
+    const { data: umaStatus, refetch: refetchUmaStatus } = useReadContract({
+        address: UMA_RESOLVER as `0x${string}`,
+        abi: UMA_RESOLVER_ABI,
+        functionName: 'getAssertionStatus',
+        args: [claimId as `0x${string}`],
+    });
+
+    // UMA liveness period (5 minutes = 300 seconds)
+    const { data: umaLiveness } = useReadContract({
+        address: UMA_RESOLVER as `0x${string}`,
+        abi: UMA_RESOLVER_ABI,
+        functionName: 'liveness',
+    });
+
+    // Resolve transaction (TruthStake.resolve)
     const {
         data: resolveHash,
         isPending: isResolving,
-        writeContract: writeResolve,
+        writeContractAsync: writeResolveAsync,
         error: resolveError
+    } = useWriteContract();
+
+    // Request Resolution transaction (UMAResolver.requestResolution)
+    const {
+        data: requestHash,
+        isPending: isRequesting,
+        writeContract: writeRequest,
+        error: requestError
+    } = useWriteContract();
+
+    // Settle transaction (UMAResolver.settleAssertion)
+    const {
+        data: settleHash,
+        isPending: isSettling,
+        writeContract: writeSettle,
+        error: settleError
     } = useWriteContract();
 
     const { isLoading: isResolveConfirming, isSuccess: isResolveConfirmed } = useWaitForTransactionReceipt({
         hash: resolveHash,
     });
+
+    const { isLoading: isRequestConfirming, isSuccess: isRequestConfirmed } = useWaitForTransactionReceipt({
+        hash: requestHash,
+    });
+
+    const { isLoading: isSettleConfirming, isSuccess: isSettleConfirmed } = useWaitForTransactionReceipt({
+        hash: settleHash,
+    });
+
+    useEffect(() => {
+        if (isRequestConfirmed) console.log('Request Resolution Confirmed!');
+        if (isSettleConfirmed) console.log('Settle Confirmed!');
+        if (isResolveConfirmed) console.log('Final Resolve Confirmed!');
+    }, [isRequestConfirmed, isSettleConfirmed, isResolveConfirmed]);
+
+    useEffect(() => {
+        if (requestError) console.error('Request Error:', requestError);
+        if (settleError) console.error('Settle Error:', settleError);
+        if (resolveError) console.error('Resolve Error:', resolveError);
+    }, [requestError, settleError, resolveError]);
 
     const [localResolved, setLocalResolved] = useState(false);
 
@@ -76,24 +127,68 @@ export default function ClaimDetailPage() {
         }
     }, [isResolveConfirmed]);
 
-    const handleResolve = () => {
-        writeResolve({
-            address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
-            abi: TRUTH_STAKE_ABI,
-            functionName: 'resolve',
+    useEffect(() => {
+        if (isRequestConfirmed || isSettleConfirmed) {
+            refetchUmaStatus();
+        }
+    }, [isRequestConfirmed, isSettleConfirmed, refetchUmaStatus]);
+
+    // UMA status parsing
+    const umaPending = (umaStatus as [boolean, boolean, boolean, `0x${string}`] | undefined)?.[0] ?? false;
+    const umaResolved = (umaStatus as [boolean, boolean, boolean, `0x${string}`] | undefined)?.[1] ?? false;
+    const umaOutcome = (umaStatus as [boolean, boolean, boolean, `0x${string}`] | undefined)?.[2] ?? false;
+    const umaAssertionId = (umaStatus as [boolean, boolean, boolean, `0x${string}`] | undefined)?.[3];
+
+    const handleRequestResolution = () => {
+        console.log('Requesting Resolution...');
+        // For demo, use a simple claim text - in production would fetch from IPFS or storage
+        const claimText = `Agent prediction claim ${claimId.slice(0, 10)}...`;
+        writeRequest({
+            address: UMA_RESOLVER as `0x${string}`,
+            abi: UMA_RESOLVER_ABI,
+            functionName: 'requestResolution',
+            args: [claimId as `0x${string}`, claimText, claim?.predictedOutcome ?? true],
+        });
+    };
+
+    const handleSettle = () => {
+        console.log('Settling Assertion...');
+        writeSettle({
+            address: UMA_RESOLVER as `0x${string}`,
+            abi: UMA_RESOLVER_ABI,
+            functionName: 'settleAssertion',
             args: [claimId as `0x${string}`],
         });
     };
 
+    const handleResolve = async () => {
+        console.log('Finalizing Resolution...');
+        try {
+            const txHash = await writeResolveAsync({
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'resolve',
+                args: [claimId as `0x${string}`],
+            });
+            console.log('Resolve Tx Sent:', txHash);
+        } catch (e: any) {
+            console.error('Resolve Failed Immediately:', e);
+            alert(`Resolve Failed: ${e.message || e}`);
+        }
+    };
+
     // Determine claim status
     const resolvesAtDate = claim ? new Date(Number(claim.resolvesAt) * 1000) : null;
-    const canResolve = claim && !claim.resolved && resolvesAtDate && isPast(resolvesAtDate);
+    const canStartResolution = claim && !claim.resolved && resolvesAtDate && isPast(resolvesAtDate) && !umaPending && !umaResolved;
+    const canSettle = umaPending; // After liveness, user can settle
+    const canFinalResolve = umaResolved && !claim?.resolved;
     const isResolved = claim?.resolved || localResolved;
-    const slashPercent = Number((economicsData?.[0]?.result as bigint | undefined) ?? 50n);
-    const rewardBonusBps = Number((economicsData?.[1]?.result as bigint | undefined) ?? 500n);
-    const rewardSlashBps = Number((economicsData?.[2]?.result as bigint | undefined) ?? 5000n);
-    const protocolSlashBps = Number((economicsData?.[3]?.result as bigint | undefined) ?? 5000n);
-    const marketSlashBps = Number((economicsData?.[4]?.result as bigint | undefined) ?? 0n);
+    const slashPercent = Number((economicsData?.[0]?.result as bigint | undefined) ?? BigInt(50));
+    const rewardBonusBps = Number((economicsData?.[1]?.result as bigint | undefined) ?? BigInt(500));
+    const rewardSlashBps = Number((economicsData?.[2]?.result as bigint | undefined) ?? BigInt(5000));
+    const protocolSlashBps = Number((economicsData?.[3]?.result as bigint | undefined) ?? BigInt(5000));
+    const marketSlashBps = Number((economicsData?.[4]?.result as bigint | undefined) ?? BigInt(0));
+    const livenessSeconds = Number(umaLiveness ?? BigInt(300));
 
     return (
         <div className="min-h-screen bg-[#09090b] text-zinc-200 font-sans">
@@ -120,8 +215,8 @@ export default function ClaimDetailPage() {
                             <button
                                 onClick={connected ? openAccountModal : openConnectModal}
                                 className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${connected
-                                        ? 'bg-teal-950/30 border border-teal-900/50 text-teal-500'
-                                        : 'bg-teal-600 text-white'
+                                    ? 'bg-teal-950/30 border border-teal-900/50 text-teal-500'
+                                    : 'bg-teal-600 text-white'
                                     }`}
                             >
                                 {connected ? account.displayName : 'Connect'}
@@ -161,9 +256,17 @@ export default function ClaimDetailPage() {
                                             <XCircle size={12} /> SLASHED
                                         </span>
                                     )
-                                ) : canResolve ? (
+                                ) : canStartResolution ? (
                                     <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-yellow-950/30 border border-yellow-900/50 text-yellow-400 text-xs font-semibold">
                                         <Clock size={12} /> READY TO RESOLVE
+                                    </span>
+                                ) : umaPending ? (
+                                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-950/30 border border-purple-900/50 text-purple-400 text-xs font-semibold">
+                                        <Timer size={12} /> UMA LIVENESS
+                                    </span>
+                                ) : canFinalResolve ? (
+                                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-950/30 border border-teal-900/50 text-teal-400 text-xs font-semibold">
+                                        <CheckCircle2 size={12} /> READY TO FINALIZE
                                     </span>
                                 ) : (
                                     <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-950/30 border border-blue-900/50 text-blue-400 text-xs font-semibold">
@@ -235,14 +338,116 @@ export default function ClaimDetailPage() {
                             </div>
                         </div>
 
-                        {/* Resolution Section */}
+                        {/* Resolution Section - UMA Flow */}
                         {!isResolved && (
-                            <div className={`p-6 rounded-xl border ${canResolve ? 'border-yellow-900/30 bg-yellow-950/10' : 'border-white/5 bg-zinc-900/20'}`}>
-                                {canResolve ? (
-                                    <>
-                                        <h3 className="text-lg font-semibold text-zinc-100 mb-2">Ready for Resolution</h3>
+                            <div className="p-6 rounded-xl border border-white/5 bg-zinc-900/20 space-y-4">
+                                <h3 className="text-lg font-semibold text-zinc-100 flex items-center gap-2">
+                                    <Shield className="w-5 h-5 text-purple-500" />
+                                    UMA Oracle Resolution
+                                </h3>
+
+                                {/* Step 1: Wait for resolution time */}
+                                {resolvesAtDate && !isPast(resolvesAtDate) && (
+                                    <div className="p-4 rounded-lg border border-white/5 bg-zinc-800/30">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <Lock className="w-5 h-5 text-zinc-500" />
+                                            <span className="font-medium text-zinc-300">Awaiting Resolution Time</span>
+                                        </div>
+                                        <p className="text-sm text-zinc-500">
+                                            This claim will be resolvable {formatDistanceToNow(resolvesAtDate, { addSuffix: true })}.
+                                        </p>
+                                    </div>
+                                )}
+
+                                {/* Step 2: Request UMA Resolution */}
+                                {canStartResolution && (
+                                    <div className="p-4 rounded-lg border border-yellow-900/30 bg-yellow-950/10">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <Zap className="w-5 h-5 text-yellow-500" />
+                                            <span className="font-medium text-yellow-400">Step 1: Request Resolution</span>
+                                        </div>
                                         <p className="text-sm text-zinc-400 mb-4">
-                                            The resolution time has passed. Anyone can trigger the resolution to verify the oracle outcome.
+                                            Submit this claim to UMA&apos;s Optimistic Oracle. The predicted outcome will be asserted and verified.
+                                        </p>
+
+                                        {requestError && (
+                                            <div className="p-3 rounded-lg border border-red-900/50 bg-red-950/20 text-sm text-red-400 mb-4">
+                                                {requestError.message}
+                                            </div>
+                                        )}
+
+                                        <button
+                                            onClick={handleRequestResolution}
+                                            disabled={!isConnected || isRequesting || isRequestConfirming}
+                                            className="px-6 py-3 rounded-lg bg-yellow-600 text-white font-semibold hover:bg-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+                                        >
+                                            {(isRequesting || isRequestConfirming) ? (
+                                                <>
+                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                    Requesting...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Zap className="w-4 h-4" />
+                                                    Request UMA Resolution
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                )}
+
+                                {/* Step 3: Liveness Period / Settle */}
+                                {canSettle && (
+                                    <div className="p-4 rounded-lg border border-purple-900/30 bg-purple-950/10">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <Timer className="w-5 h-5 text-purple-500" />
+                                            <span className="font-medium text-purple-400">Step 2: Liveness Period</span>
+                                        </div>
+                                        <p className="text-sm text-zinc-400 mb-2">
+                                            Assertion submitted to UMA. Anyone can dispute during the {livenessSeconds / 60} minute liveness window.
+                                        </p>
+                                        <p className="text-xs text-zinc-500 mb-4">
+                                            After the liveness period ends, click &quot;Settle&quot; to finalize the result.
+                                        </p>
+
+                                        {settleError && (
+                                            <div className="p-3 rounded-lg border border-red-900/50 bg-red-950/20 text-sm text-red-400 mb-4">
+                                                {settleError.message}
+                                            </div>
+                                        )}
+
+                                        <button
+                                            onClick={handleSettle}
+                                            disabled={!isConnected || isSettling || isSettleConfirming}
+                                            className="px-6 py-3 rounded-lg bg-purple-600 text-white font-semibold hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+                                        >
+                                            {(isSettling || isSettleConfirming) ? (
+                                                <>
+                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                    Settling...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Timer className="w-4 h-4" />
+                                                    Settle Assertion
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                )}
+
+                                {/* Step 4: Final Resolve */}
+                                {canFinalResolve && (
+                                    <div className="p-4 rounded-lg border border-teal-900/30 bg-teal-950/10">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <CheckCircle2 className="w-5 h-5 text-teal-500" />
+                                            <span className="font-medium text-teal-400">Step 3: Finalize Resolution</span>
+                                        </div>
+                                        <p className="text-sm text-zinc-400 mb-2">
+                                            UMA has verified the outcome: <strong className={umaOutcome ? 'text-teal-400' : 'text-red-400'}>{umaOutcome ? 'TRUE' : 'FALSE'}</strong>
+                                        </p>
+                                        <p className="text-xs text-zinc-500 mb-4">
+                                            Click to finalize and execute the stake return or slash.
                                         </p>
 
                                         {resolveError && (
@@ -254,28 +459,26 @@ export default function ClaimDetailPage() {
                                         <button
                                             onClick={handleResolve}
                                             disabled={!isConnected || isResolving || isResolveConfirming}
-                                            className="px-6 py-3 rounded-lg bg-yellow-600 text-white font-semibold hover:bg-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+                                            className="px-6 py-3 rounded-lg bg-teal-600 text-white font-semibold hover:bg-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
                                         >
                                             {(isResolving || isResolveConfirming) ? (
                                                 <>
                                                     <Loader2 className="w-4 h-4 animate-spin" />
-                                                    Resolving...
+                                                    Finalizing...
                                                 </>
                                             ) : (
-                                                'Resolve Claim'
+                                                <>
+                                                    <CheckCircle2 className="w-4 h-4" />
+                                                    Finalize Resolution
+                                                </>
                                             )}
                                         </button>
-                                    </>
-                                ) : (
-                                    <>
-                                        <div className="flex items-center gap-3 mb-2">
-                                            <Lock className="w-5 h-5 text-zinc-500" />
-                                            <h3 className="text-lg font-semibold text-zinc-400">Awaiting Resolution Time</h3>
-                                        </div>
-                                        <p className="text-sm text-zinc-500">
-                                            This claim will be resolvable {resolvesAtDate ? formatDistanceToNow(resolvesAtDate, { addSuffix: true }) : 'soon'}.
-                                        </p>
-                                    </>
+                                        {resolveHash && (
+                                            <div className="mt-2 text-xs font-mono text-teal-500/70 break-all">
+                                                Tx: {resolveHash}
+                                            </div>
+                                        )}
+                                    </div>
                                 )}
                             </div>
                         )}

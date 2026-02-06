@@ -4,11 +4,10 @@ import pool from '@/lib/db';
 import { createPublicClient, http, parseAbiItem } from 'viem';
 import { baseSepolia } from 'viem/chains';
 import { CONTRACTS } from '@/lib/contracts';
-import { TRUTH_STAKE_ABI, IDENTITY_REGISTRY_ABI, OWNER_BADGE_ABI } from '@/lib/abis';
+import { TRUTH_STAKE_ABI, IDENTITY_REGISTRY_ABI, AGENT_TOKEN_FACTORY_ABI } from '@/lib/abis';
 
 // --- CONFIG ---
-const BATCH_SIZE = 2000; // Reduced to 2,000 to prevent RPC 503 errors
-// const DEPLOY_BLOCK = BigInt(18000000); // Legacy: Now using dynamic head
+const BATCH_SIZE = 2000;
 
 const publicClient = createPublicClient({
     chain: baseSepolia,
@@ -21,7 +20,7 @@ async function ensureSchema() {
     try {
         await client.query('BEGIN');
 
-        // 1. Indexer State (Tracks last synced block)
+        // 1. Indexer State
         await client.query(`
       CREATE TABLE IF NOT EXISTS indexer_state (
         id SERIAL PRIMARY KEY,
@@ -30,11 +29,12 @@ async function ensureSchema() {
       );
     `);
 
-        // 2. Agents Table
+        // 2. Agents Table (Expanded)
         await client.query(`
       CREATE TABLE IF NOT EXISTS agents (
         id BIGINT PRIMARY KEY,
-        address TEXT NOT NULL,
+        owner TEXT NOT NULL,          -- NFT Owner (EOA)
+        wallet TEXT,                  -- Agent Wallet (6551/Smart Account)
         name TEXT,
         ticker TEXT,
         image TEXT,
@@ -42,9 +42,39 @@ async function ensureSchema() {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         trust_score NUMERIC DEFAULT 0,
+        total_claims NUMERIC DEFAULT 0,
+        total_revenue NUMERIC DEFAULT 0,
         total_slashed NUMERIC DEFAULT 0,
         is_active BOOLEAN DEFAULT TRUE,
         status TEXT DEFAULT 'active'
+      );
+    `);
+
+        // 3. Claims Table
+        await client.query(`
+      CREATE TABLE IF NOT EXISTS claims (
+        id TEXT PRIMARY KEY,          -- Claim Hash
+        agent_id BIGINT REFERENCES agents(id),
+        submitter TEXT NOT NULL,
+        stake NUMERIC NOT NULL,
+        predicted_outcome BOOLEAN,
+        resolved BOOLEAN DEFAULT FALSE,
+        outcome BOOLEAN,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TIMESTAMP WITH TIME ZONE
+      );
+    `);
+
+        // 4. Auctions Table
+        await client.query(`
+      CREATE TABLE IF NOT EXISTS auctions (
+        agent_id BIGINT PRIMARY KEY REFERENCES agents(id),
+        auction_address TEXT NOT NULL,
+        token_address TEXT NOT NULL,
+        tokens_for_sale NUMERIC,
+        total_cleared NUMERIC DEFAULT 0,
+        status TEXT DEFAULT 'active',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
@@ -52,7 +82,7 @@ async function ensureSchema() {
         const res = await client.query("SELECT value FROM indexer_state WHERE key = 'last_synced_block'");
         if (res.rowCount === 0) {
             const currentBlock = await publicClient.getBlockNumber();
-            const startBlock = currentBlock - BigInt(50); // Start very close to head (50 block buffer)
+            const startBlock = currentBlock - BigInt(50);
             await client.query("INSERT INTO indexer_state (key, value) VALUES ($1, $2)", ['last_synced_block', startBlock.toString()]);
         }
 
@@ -68,8 +98,7 @@ async function ensureSchema() {
 // --- HELPER: Resolve Metadata from ID ---
 async function fetchAgentMetadata(agentId: bigint) {
     try {
-        // 1. Get URI & Owner from Contract
-        const [tokenURI, owner, slashed] = await publicClient.multicall({
+        const [tokenURI, owner, wallet, slashed] = await publicClient.multicall({
             contracts: [
                 {
                     address: CONTRACTS.IDENTITY_REGISTRY as `0x${string}`,
@@ -84,6 +113,12 @@ async function fetchAgentMetadata(agentId: bigint) {
                     args: [agentId]
                 },
                 {
+                    address: CONTRACTS.IDENTITY_REGISTRY as `0x${string}`,
+                    abi: IDENTITY_REGISTRY_ABI,
+                    functionName: 'getAgentWallet',
+                    args: [agentId]
+                },
+                {
                     address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
                     abi: TRUTH_STAKE_ABI,
                     functionName: 'agentTotalSlashed',
@@ -94,7 +129,7 @@ async function fetchAgentMetadata(agentId: bigint) {
 
         if (tokenURI.status !== 'success' || owner.status !== 'success') return null;
 
-        // 2. Fetch IPFS/HTTP JSON
+        // Fetch IPFS/HTTP JSON
         let metadata: any = {};
         try {
             let uri = tokenURI.result as string;
@@ -110,12 +145,13 @@ async function fetchAgentMetadata(agentId: bigint) {
         return {
             agentId,
             owner: owner.result as string,
+            wallet: wallet.status === 'success' ? (wallet.result as string) : null,
             slashed: slashed.status === 'success' ? slashed.result : BigInt(0),
             name: metadata.name || `Agent #${agentId}`,
             description: metadata.description || '',
             image: metadata.image ? metadata.image.replace('ipfs://', 'https://gateway.pinata.cloud/ipfs/') : '',
             ticker: (metadata.name || 'UNK').slice(0, 4).toUpperCase(),
-            isActive: metadata.active !== false // Default true
+            isActive: metadata.active !== false
         };
 
     } catch (e) {
@@ -130,18 +166,26 @@ export async function GET(request: Request) {
         const { searchParams } = new URL(request.url);
         const reset = searchParams.get('reset');
 
-        await ensureSchema();
-
         const client = await pool.connect();
 
-        // RESET Logic: If ?reset=true, force start from LATEST
+        // RESET Logic
         if (reset === 'true') {
             const currentBlock = await publicClient.getBlockNumber();
-            const startBlock = currentBlock - BigInt(500);
+            const startBlock = currentBlock - BigInt(2000); // Look back further for reset
 
+            // Drop tables to valid schema recreation
+            await client.query("DROP TABLE IF EXISTS claims, auctions, agents, indexer_state CASCADE");
+            console.log('Indexer Tables Dropped for Reset');
+
+            // Re-initialize schema immediately
+            await ensureSchema();
+
+            // Set sync start
             await client.query("UPDATE indexer_state SET value = $1 WHERE key = 'last_synced_block'", [startBlock.toString()]);
-            await client.query("TRUNCATE TABLE agents");
             console.log('Indexer Reset to LATEST block:', startBlock);
+        } else {
+            // Normal run: ensure schema matches
+            await ensureSchema();
         }
 
         // 1. Get Sync Range
@@ -154,45 +198,71 @@ export async function GET(request: Request) {
             return NextResponse.json({ status: 'up-to-date', lastBlock: lastBlock.toString() });
         }
 
-        // Limit range to prevent massive queries
-        const toBlock = (currentBlock - lastBlock > BigInt(BATCH_SIZE))
+        // Limit range and ensure buffer (sync up to HEAD-2 to allow node indexing)
+        const targetBlock = currentBlock - BigInt(2);
+
+        if (targetBlock <= lastBlock) {
+            client.release();
+            return NextResponse.json({ status: 'syncing', message: 'Waiting for more confirmations', lastBlock: lastBlock.toString() });
+        }
+
+        const toBlock = (targetBlock - lastBlock > BigInt(BATCH_SIZE))
             ? lastBlock + BigInt(BATCH_SIZE)
-            : currentBlock;
+            : targetBlock;
 
         console.log(`Syncing logs from ${lastBlock} to ${toBlock}...`);
 
-        // 2. Fetch Logs
-        const logs = await publicClient.getLogs({
-            address: CONTRACTS.IDENTITY_REGISTRY as `0x${string}`,
-            event: parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)'),
-            args: {
-                from: '0x0000000000000000000000000000000000000000', // Mint events only
-            },
-            fromBlock: lastBlock + BigInt(1),
-            toBlock: toBlock,
-        });
+        // 2. Fetch Logs (Parallel)
+        const [identityLogs, claimSubmittedLogs, claimResolvedLogs, auctionLogs] = await Promise.all([
+            // Identity Registry: New Agents
+            publicClient.getLogs({
+                address: CONTRACTS.IDENTITY_REGISTRY as `0x${string}`,
+                event: parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)'),
+                args: { from: '0x0000000000000000000000000000000000000000' }, // Mints
+                fromBlock: lastBlock + BigInt(1),
+                toBlock: toBlock,
+            }),
+            // TruthStake: Claim Submitted
+            publicClient.getLogs({
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                event: parseAbiItem('event ClaimSubmitted(bytes32 indexed claimId, uint256 indexed agentId, address submitter, bytes32 claimHash, uint256 stake)'),
+                fromBlock: lastBlock + BigInt(1),
+                toBlock: toBlock,
+            }),
+            // TruthStake: Claim Resolved
+            publicClient.getLogs({
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                event: parseAbiItem('event ClaimResolved(bytes32 indexed claimId, uint256 indexed agentId, bool wasCorrect, uint256 slashAmount, uint256 bonusAmount)'),
+                fromBlock: lastBlock + BigInt(1),
+                toBlock: toBlock,
+            }),
+            // AgentTokenFactory: Auction Launched
+            publicClient.getLogs({
+                address: CONTRACTS.AGENT_TOKEN_FACTORY as `0x${string}`,
+                event: parseAbiItem('event AuctionLaunched(uint256 indexed agentId, address token, address auction, uint256 tokensForSale, uint256 lpReserveTokens)'),
+                fromBlock: lastBlock + BigInt(1),
+                toBlock: toBlock,
+            })
+        ]);
 
-        console.log(`Found ${logs.length} new agents.`);
+        console.log(`Found ${identityLogs.length} agents, ${claimSubmittedLogs.length} claims, ${claimResolvedLogs.length} resolutions, ${auctionLogs.length} auctions.`);
 
-        // 3. Process & Insert Agents
-        for (const log of logs) {
+        // 3. Process Agents
+        for (const log of identityLogs) {
             const agentId = log.args.tokenId!;
             const data = await fetchAgentMetadata(agentId);
-
             if (data) {
                 await client.query(`
-          INSERT INTO agents (id, address, name, ticker, image, description, total_slashed, is_active)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-          ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            address = EXCLUDED.address,
-            image = EXCLUDED.image,
-            description = EXCLUDED.description,
-            total_slashed = EXCLUDED.total_slashed,
-            updated_at = CURRENT_TIMESTAMP;
-        `, [
+                    INSERT INTO agents (id, owner, wallet, name, ticker, image, description, total_slashed, is_active)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    ON CONFLICT (id) DO UPDATE SET
+                        owner = EXCLUDED.owner,
+                        wallet = EXCLUDED.wallet,
+                        updated_at = CURRENT_TIMESTAMP;
+                `, [
                     data.agentId.toString(),
                     data.owner,
+                    data.wallet,
                     data.name,
                     data.ticker,
                     data.image,
@@ -203,14 +273,74 @@ export async function GET(request: Request) {
             }
         }
 
-        // 4. Update State
-        await client.query("UPDATE indexer_state SET value = $1 WHERE key = 'last_synced_block'", [toBlock.toString()]);
+        // 4. Process Claims (Submitted)
+        for (const log of claimSubmittedLogs) {
+            const { claimId, agentId, submitter, stake } = log.args;
+            if (!claimId || !agentId) continue;
 
+            // Insert Claim
+            await client.query(`
+                INSERT INTO claims (id, agent_id, submitter, stake)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (id) DO NOTHING;
+            `, [claimId, agentId.toString(), submitter, stake?.toString()]);
+
+            // Increment Agent Total Claims
+            await client.query(`
+                UPDATE agents SET total_claims = total_claims + 1 WHERE id = $1
+            `, [agentId.toString()]);
+        }
+
+        // 5. Process Resolutions
+        for (const log of claimResolvedLogs) {
+            const { claimId, agentId, wasCorrect, slashAmount, bonusAmount } = log.args;
+            if (!claimId || !agentId) continue;
+
+            // Update Claim Status
+            await client.query(`
+                UPDATE claims 
+                SET resolved = TRUE, outcome = $2, resolved_at = CURRENT_TIMESTAMP
+                WHERE id = $1
+            `, [claimId, wasCorrect]);
+
+            // Update Agent Metrics (Slash / Revenue)
+            if (wasCorrect) {
+                await client.query(`
+                    UPDATE agents SET total_revenue = total_revenue + $2 WHERE id = $1
+                `, [agentId.toString(), bonusAmount?.toString() || '0']);
+            } else {
+                await client.query(`
+                    UPDATE agents SET total_slashed = total_slashed + $2 WHERE id = $1
+                `, [agentId.toString(), slashAmount?.toString() || '0']);
+            }
+        }
+
+        // 6. Process Auctions
+        for (const log of auctionLogs) {
+            const { agentId, token, auction, tokensForSale } = log.args;
+            if (!agentId) continue;
+
+            await client.query(`
+                INSERT INTO auctions (agent_id, auction_address, token_address, tokens_for_sale)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (agent_id) DO UPDATE SET
+                    auction_address = EXCLUDED.auction_address,
+                    token_address = EXCLUDED.token_address;
+            `, [agentId.toString(), auction, token, tokensForSale?.toString()]);
+        }
+
+        // 7. Update State
+        await client.query("UPDATE indexer_state SET value = $1 WHERE key = 'last_synced_block'", [toBlock.toString()]);
         client.release();
 
         return NextResponse.json({
             status: 'success',
-            processed: logs.length,
+            processed: {
+                agents: identityLogs.length,
+                claims: claimSubmittedLogs.length,
+                resolutions: claimResolvedLogs.length,
+                auctions: auctionLogs.length
+            },
             fromBlock: lastBlock.toString(),
             toBlock: toBlock.toString()
         });

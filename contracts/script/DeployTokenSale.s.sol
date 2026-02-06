@@ -14,6 +14,7 @@ contract DeployTokenSale is Script {
     address constant CCA_FACTORY = 0xCCccCcCAE7503Cac057829BF2811De42E16e0bD5;
     address constant USDC = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
     address constant IDENTITY_REGISTRY = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
+    address constant V4_POSITION_MANAGER = 0x4B2C77d209D3405F41a037Ec6c77F7F5b8e2ca80;
 
     uint256 constant MAX_LP_CURRENCY_FOR_TEST = 50e6; // 50 USDC (6 decimals)
 
@@ -44,8 +45,10 @@ contract DeployTokenSale is Script {
 
         factory.setLiquidityManager(address(manager));
         manager.setFactory(address(factory));
+        manager.setPositionManager(V4_POSITION_MANAGER);
+        manager.setPoolConfig(10_000, 60, address(0));
 
-        console2.log("Liquidity manager wired into factory");
+        console2.log("Liquidity manager wired into factory and configured for v4");
 
         vm.stopBroadcast();
 

@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts } from 'wagmi';
 import { parseUnits, keccak256, toBytes } from 'viem';
@@ -9,15 +10,36 @@ import { useUSDCBalance, useUSDCAllowance, useMinStake } from '@/hooks';
 import { CONTRACTS } from '@/lib/contracts';
 import { TRUTH_STAKE_ABI, ERC20_ABI } from '@/lib/abis';
 import {
-    ArrowLeft, Cpu, AlertCircle, CheckCircle2, Loader2, Lock
+    ArrowLeft, Cpu, AlertCircle, CheckCircle2, Loader2, Lock, ChevronDown
 } from 'lucide-react';
 
-// Default agent ID - should be dynamic based on user's agent
-const AGENT_ID = 142;
+// Agent type for dropdown
+interface Agent {
+    id: string;
+    name: string;
+    owner: string;
+}
+
 const formatUSDC = (amount: bigint) => (Number(amount) / 1e6).toFixed(2);
 
-export default function SubmitClaimPage() {
-    const { isConnected } = useAccount();
+// Wrapper component with Suspense for useSearchParams
+export default function SubmitClaimPageWrapper() {
+    return (
+        <Suspense fallback={
+            <div className="min-h-screen bg-[#09090b] text-zinc-200 flex items-center justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-zinc-500" />
+            </div>
+        }>
+            <SubmitClaimPage />
+        </Suspense>
+    );
+}
+
+function SubmitClaimPage() {
+    const searchParams = useSearchParams();
+    const preselectedAgentId = searchParams.get('agentId');
+
+    const { isConnected, address } = useAccount();
     const { balance: usdcBalance, balanceFormatted, refetch: refetchBalance } = useUSDCBalance();
     const { allowance, refetch: refetchAllowance } = useUSDCAllowance(CONTRACTS.TRUTH_STAKE);
     const { minStake } = useMinStake();
@@ -57,10 +79,46 @@ export default function SubmitClaimPage() {
     });
 
     // Form state
+    const [selectedAgentId, setSelectedAgentId] = useState<string>(preselectedAgentId || '');
+    const [agents, setAgents] = useState<Agent[]>([]);
+    const [loadingAgents, setLoadingAgents] = useState(true);
     const [claimDescription, setClaimDescription] = useState('');
     const [stakeAmount, setStakeAmount] = useState('1');
     const [resolutionMinutes, setResolutionMinutes] = useState('5');
     const [predictedOutcome, setPredictedOutcome] = useState<boolean>(true);
+
+    // Fetch user's agents
+    useEffect(() => {
+        const fetchAgents = async () => {
+            if (!address) {
+                setAgents([]);
+                setLoadingAgents(false);
+                return;
+            }
+            try {
+                const res = await fetch('/api/agents');
+                if (res.ok) {
+                    const data = await res.json();
+                    // Filter agents owned by the connected wallet
+                    const ownedAgents = (data.agents || []).filter(
+                        (a: any) => a.owner?.toLowerCase() === address.toLowerCase()
+                    );
+                    setAgents(ownedAgents);
+                    // Auto-select if coming from agent page or only one agent
+                    if (preselectedAgentId) {
+                        setSelectedAgentId(preselectedAgentId);
+                    } else if (ownedAgents.length === 1) {
+                        setSelectedAgentId(ownedAgents[0].id);
+                    }
+                }
+            } catch (e) {
+                console.error('[Claims] Failed to fetch agents:', e);
+            } finally {
+                setLoadingAgents(false);
+            }
+        };
+        fetchAgents();
+    }, [address, preselectedAgentId]);
 
     // Transaction states
     const [step, setStep] = useState<'form' | 'approve' | 'submit' | 'success'>('form');
@@ -94,12 +152,12 @@ export default function SubmitClaimPage() {
     const needsApproval = allowance !== undefined && stakeInUsdc > allowance;
     const hasEnoughBalance = usdcBalance !== undefined && stakeInUsdc <= usdcBalance;
     const minStakeFormatted = minStake ? (Number(minStake) / 1e6).toString() : '1';
-    const slashPercent = Number((economicsData?.[0]?.result as bigint | undefined) ?? 50n);
-    const rewardBonusBps = Number((economicsData?.[1]?.result as bigint | undefined) ?? 500n);
-    const maxBonusPerClaim = (economicsData?.[2]?.result as bigint | undefined) ?? 50_000_000n;
-    const rewardSlashBps = Number((economicsData?.[3]?.result as bigint | undefined) ?? 5000n);
-    const protocolSlashBps = Number((economicsData?.[4]?.result as bigint | undefined) ?? 5000n);
-    const marketSlashBps = Number((economicsData?.[5]?.result as bigint | undefined) ?? 0n);
+    const slashPercent = Number((economicsData?.[0]?.result as bigint | undefined) ?? BigInt(50));
+    const rewardBonusBps = Number((economicsData?.[1]?.result as bigint | undefined) ?? BigInt(500));
+    const maxBonusPerClaim = (economicsData?.[2]?.result as bigint | undefined) ?? BigInt(50_000_000);
+    const rewardSlashBps = Number((economicsData?.[3]?.result as bigint | undefined) ?? BigInt(5000));
+    const protocolSlashBps = Number((economicsData?.[4]?.result as bigint | undefined) ?? BigInt(5000));
+    const marketSlashBps = Number((economicsData?.[5]?.result as bigint | undefined) ?? BigInt(0));
 
     // Generate claim hash from description
     const claimHash = claimDescription
@@ -125,7 +183,13 @@ export default function SubmitClaimPage() {
         }
     }, [isSubmitConfirmed, refetchBalance]);
 
+    useEffect(() => {
+        if (submitError) console.error('Submit Error:', submitError);
+        if (approveError) console.error('Approve Error:', approveError);
+    }, [submitError, approveError]);
+
     const handleApprove = () => {
+        console.log('Approving USDC:', { spender: CONTRACTS.TRUTH_STAKE, amount: stakeInUsdc });
         writeApprove({
             address: CONTRACTS.USDC as `0x${string}`,
             abi: ERC20_ABI,
@@ -136,16 +200,29 @@ export default function SubmitClaimPage() {
     };
 
     const handleSubmit = () => {
+        console.log('Submitting claim:', {
+            agentId: selectedAgentId,
+            claimHash,
+            stake: stakeInUsdc,
+            resolvesAt,
+            outcome: predictedOutcome
+        });
+
+        if (!selectedAgentId) {
+            alert('Please select an agent first.');
+            return;
+        }
         writeSubmit({
             address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
             abi: TRUTH_STAKE_ABI,
             functionName: 'submitClaim',
-            args: [BigInt(AGENT_ID), claimHash as `0x${string}`, stakeInUsdc, BigInt(resolvesAt), predictedOutcome],
+            args: [BigInt(selectedAgentId), claimHash as `0x${string}`, stakeInUsdc, BigInt(resolvesAt), predictedOutcome],
         });
         if (step === 'form') setStep('submit');
     };
 
-    const canSubmit = claimDescription.trim() &&
+    const canSubmit = selectedAgentId &&
+        claimDescription.trim() &&
         parseFloat(stakeAmount) >= parseFloat(minStakeFormatted) &&
         hasEnoughBalance &&
         parseInt(resolutionMinutes) > 0;
@@ -175,8 +252,8 @@ export default function SubmitClaimPage() {
                             <button
                                 onClick={connected ? openAccountModal : openConnectModal}
                                 className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${connected
-                                        ? 'bg-teal-950/30 border border-teal-900/50 text-teal-500'
-                                        : 'bg-teal-600 text-white'
+                                    ? 'bg-teal-950/30 border border-teal-900/50 text-teal-500'
+                                    : 'bg-teal-600 text-white'
                                     }`}
                             >
                                 {connected ? account.displayName : 'Connect Wallet'}
@@ -191,7 +268,8 @@ export default function SubmitClaimPage() {
                 <div className="mb-8">
                     <h1 className="text-3xl font-bold text-zinc-100 mb-2">Submit Prediction Claim</h1>
                     <p className="text-zinc-500">
-                        Stake USDC on a verifiable prediction. Agent #{AGENT_ID}
+                        Stake USDC on a verifiable prediction.
+                        {selectedAgentId && <span className="text-teal-400 ml-1">Agent #{selectedAgentId}</span>}
                     </p>
                 </div>
 
@@ -238,12 +316,49 @@ export default function SubmitClaimPage() {
                 ) : (
                     <form onSubmit={(e) => {
                         e.preventDefault();
+                        console.log('Form submitted. Needs approval:', needsApproval);
                         if (needsApproval) {
+                            console.log('Triggering approval...');
                             handleApprove();
                         } else {
+                            console.log('Triggering submit...');
                             handleSubmit();
                         }
                     }} className="space-y-6">
+                        {/* Agent Selector */}
+                        <div>
+                            <label className="block text-xs uppercase tracking-wider text-zinc-500 mb-2 font-semibold">
+                                Select Agent
+                            </label>
+                            {loadingAgents ? (
+                                <div className="flex items-center gap-2 text-zinc-500">
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    Loading your agents...
+                                </div>
+                            ) : agents.length === 0 ? (
+                                <div className="p-4 rounded-lg bg-yellow-950/20 border border-yellow-900/50 text-sm text-yellow-400">
+                                    No agents found for your wallet. <Link href="/register-agent" className="underline">Register an agent first</Link>.
+                                </div>
+                            ) : (
+                                <div className="relative">
+                                    <select
+                                        value={selectedAgentId}
+                                        onChange={(e) => setSelectedAgentId(e.target.value)}
+                                        disabled={step !== 'form'}
+                                        className="w-full p-4 rounded-lg bg-zinc-900/50 border border-zinc-800 text-zinc-200 focus:outline-none focus:border-teal-900/50 appearance-none cursor-pointer"
+                                    >
+                                        <option value="">-- Select an agent --</option>
+                                        {agents.map((agent) => (
+                                            <option key={agent.id} value={agent.id}>
+                                                #{agent.id} - {agent.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
+                                </div>
+                            )}
+                        </div>
+
                         {/* Claim Description */}
                         <div>
                             <label className="block text-xs uppercase tracking-wider text-zinc-500 mb-2 font-semibold">
@@ -312,8 +427,8 @@ export default function SubmitClaimPage() {
                                     onClick={() => setPredictedOutcome(true)}
                                     disabled={step !== 'form'}
                                     className={`flex-1 p-4 rounded-lg border text-sm font-semibold transition-all ${predictedOutcome
-                                            ? 'border-teal-500 bg-teal-950/30 text-teal-400'
-                                            : 'border-zinc-800 bg-zinc-900/30 text-zinc-500 hover:border-zinc-700'
+                                        ? 'border-teal-500 bg-teal-950/30 text-teal-400'
+                                        : 'border-zinc-800 bg-zinc-900/30 text-zinc-500 hover:border-zinc-700'
                                         }`}
                                 >
                                     ✓ TRUE
@@ -323,8 +438,8 @@ export default function SubmitClaimPage() {
                                     onClick={() => setPredictedOutcome(false)}
                                     disabled={step !== 'form'}
                                     className={`flex-1 p-4 rounded-lg border text-sm font-semibold transition-all ${!predictedOutcome
-                                            ? 'border-red-500 bg-red-950/30 text-red-400'
-                                            : 'border-zinc-800 bg-zinc-900/30 text-zinc-500 hover:border-zinc-700'
+                                        ? 'border-red-500 bg-red-950/30 text-red-400'
+                                        : 'border-zinc-800 bg-zinc-900/30 text-zinc-500 hover:border-zinc-700'
                                         }`}
                                 >
                                     ✗ FALSE

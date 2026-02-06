@@ -346,6 +346,17 @@ export const AGENT_TOKEN_FACTORY_ABI = [
         inputs: [],
         outputs: [{ type: 'uint16' }],
     },
+    {
+        name: 'AuctionLaunched',
+        type: 'event',
+        inputs: [
+            { name: 'agentId', type: 'uint256', indexed: true },
+            { name: 'token', type: 'address', indexed: false },
+            { name: 'auction', type: 'address', indexed: false },
+            { name: 'tokensForSale', type: 'uint256', indexed: false },
+            { name: 'lpReserveTokens', type: 'uint256', indexed: false },
+        ],
+    },
 ] as const;
 
 export const POST_AUCTION_LIQUIDITY_MANAGER_ABI = [
@@ -429,11 +440,25 @@ export const POST_AUCTION_LIQUIDITY_MANAGER_ABI = [
 // Continuous Clearing Auction (CCA) ABI
 export const CCA_ABI = [
     {
+        name: 'startBlock',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint64' }],
+    },
+    {
         name: 'clearingPrice',
         type: 'function',
         stateMutability: 'view',
         inputs: [],
         outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'endBlock',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint64' }],
     },
     {
         name: 'totalCleared',
@@ -469,6 +494,20 @@ export const CCA_ABI = [
         stateMutability: 'view',
         inputs: [],
         outputs: [{ type: 'uint64' }],
+    },
+    {
+        name: 'fundsRecipient',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'address' }],
+    },
+    {
+        name: 'tokensRecipient',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'address' }],
     },
     {
         // 4-arg version (used by reference implementation)
@@ -526,6 +565,95 @@ export const CCA_ABI = [
             { name: 'owner', type: 'address', indexed: true },
             { name: 'tokensFilled', type: 'uint256', indexed: false },
             { name: 'currencyRefunded', type: 'uint256', indexed: false },
+        ],
+    },
+] as const;
+
+// UMAResolver ABI
+export const UMA_RESOLVER_ABI = [
+    // Request resolution for a claim
+    {
+        name: 'requestResolution',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [
+            { name: 'claimHash', type: 'bytes32' },
+            { name: 'claimText', type: 'string' },
+            { name: 'predictedOutcome', type: 'bool' },
+        ],
+        outputs: [],
+    },
+    // Settle assertion after liveness period
+    {
+        name: 'settleAssertion',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [{ name: 'claimHash', type: 'bytes32' }],
+        outputs: [],
+    },
+    // IResolver interface - resolve
+    {
+        name: 'resolve',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'claimHash', type: 'bytes32' }],
+        outputs: [{ type: 'bool' }],
+    },
+    // IResolver interface - canResolve
+    {
+        name: 'canResolve',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'claimHash', type: 'bytes32' }],
+        outputs: [{ type: 'bool' }],
+    },
+    // Get assertion status
+    {
+        name: 'getAssertionStatus',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'claimHash', type: 'bytes32' }],
+        outputs: [
+            { name: 'pending', type: 'bool' },
+            { name: 'resolved', type: 'bool' },
+            { name: 'outcome', type: 'bool' },
+            { name: 'assertionId', type: 'bytes32' },
+        ],
+    },
+    // Get minimum bond required
+    {
+        name: 'getMinBond',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint256' }],
+    },
+    // Liveness period
+    {
+        name: 'liveness',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint64' }],
+    },
+    // Events
+    {
+        name: 'ResolutionRequested',
+        type: 'event',
+        inputs: [
+            { name: 'claimHash', type: 'bytes32', indexed: true },
+            { name: 'assertionId', type: 'bytes32', indexed: true },
+            { name: 'requester', type: 'address', indexed: false },
+            { name: 'claimText', type: 'string', indexed: false },
+        ],
+    },
+    {
+        name: 'ResolutionCompleted',
+        type: 'event',
+        inputs: [
+            { name: 'claimHash', type: 'bytes32', indexed: true },
+            { name: 'assertionId', type: 'bytes32', indexed: true },
+            { name: 'outcome', type: 'bool', indexed: false },
         ],
     },
 ] as const;

@@ -20,7 +20,16 @@ export async function GET() {
             return NextResponse.json({ agents: [], status: 'init_needed' });
         }
 
-        const res = await client.query('SELECT * FROM agents ORDER BY id DESC');
+        const res = await client.query(`
+            SELECT 
+                a.id, a.owner, a.wallet, a.name, a.ticker, a.image, a.description, 
+                a.trust_score, a.total_claims, a.total_revenue, a.total_slashed, 
+                a.is_active, a.status, a.created_at,
+                auc.auction_address, auc.status as auction_status, auc.total_cleared
+            FROM agents a
+            LEFT JOIN auctions auc ON a.id = auc.agent_id
+            ORDER BY a.id DESC
+        `);
         client.release();
 
         return NextResponse.json({ agents: res.rows, status: 'success' });

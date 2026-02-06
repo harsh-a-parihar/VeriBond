@@ -80,10 +80,18 @@ export default function AuctionPage() {
         args: agentId ? [agentId] : undefined,
     });
 
-    const { data: liquidityManagerAddress } = useReadContract({
+    const { data: factoryLiquidityManagerAddress } = useReadContract({
         address: AGENT_TOKEN_FACTORY,
         abi: AGENT_TOKEN_FACTORY_ABI,
         functionName: 'liquidityManager',
+    });
+
+    const { data: auctionFundsRecipient } = useReadContract({
+        address: auctionAddress,
+        abi: CCA_ABI,
+        functionName: 'fundsRecipient',
+        args: [],
+        query: { enabled: !!auctionAddress }
     });
 
     // 2. Read Auction State
@@ -103,6 +111,14 @@ export default function AuctionPage() {
         query: { enabled: !!auctionAddress }
     });
 
+    const liquidityManagerAddress = (auctionFundsRecipient && auctionFundsRecipient !== ZERO_ADDRESS)
+        ? auctionFundsRecipient
+        : factoryLiquidityManagerAddress;
+    const usesLegacyAuctionManager = !!(
+        auctionFundsRecipient
+        && factoryLiquidityManagerAddress
+        && auctionFundsRecipient.toLowerCase() !== factoryLiquidityManagerAddress.toLowerCase()
+    );
     const hasLiquidityManager = !!liquidityManagerAddress && liquidityManagerAddress !== ZERO_ADDRESS;
 
     const { data: managerAuctionRecord, refetch: refetchManagerAuction } = useReadContract({
@@ -195,12 +211,12 @@ export default function AuctionPage() {
     const managerRegistered = managerRecord?.[8] ?? false;
     const managerFinalized = managerRecord?.[9] ?? false;
     const managerReleased = managerRecord?.[10] ?? false;
-    const managerCurrencyRaised = managerRecord?.[5] ?? 0n;
-    const managerLpCurrencyBudget = managerRecord?.[6] ?? 0n;
-    const managerLpTokenBudget = managerRecord?.[7] ?? 0n;
+    const managerCurrencyRaised = managerRecord?.[5] ?? BigInt(0);
+    const managerLpCurrencyBudget = managerRecord?.[6] ?? BigInt(0);
+    const managerLpTokenBudget = managerRecord?.[7] ?? BigInt(0);
     const managerHasPositionManager = !!managerPositionManager && managerPositionManager !== ZERO_ADDRESS;
     const managerSeeded = managerLiquiditySeeded ?? false;
-    const managerPositionId = managerPositionTokenId ?? 0n;
+    const managerPositionId = managerPositionTokenId ?? BigInt(0);
 
     // Calculate estimated time remaining
     const blocksRemaining = currentBlock && endBlock ? (endBlock > currentBlock ? endBlock - currentBlock : BigInt(0)) : BigInt(0);
@@ -321,6 +337,33 @@ export default function AuctionPage() {
         }
     }, [isSeedSuccess, refetchManagerAuction, refetchManagerLiquiditySeeded, refetchManagerPositionTokenId]);
 
+    useEffect(() => {
+        if (!seedHash && !isSeedPending && !isSeedConfirming && !isSeedSuccess && !seedError) return;
+        console.log('[Seed LP TX Monitor]', {
+            seedHash: seedHash?.toString(),
+            auctionAddress,
+            liquidityManagerAddress,
+            isSeedPending,
+            isSeedConfirming,
+            isSeedSuccess,
+            seedError: seedError ? {
+                name: seedError.name,
+                message: seedError.message,
+                shortMessage: (seedError as { shortMessage?: string }).shortMessage,
+                details: (seedError as { details?: string }).details,
+                cause: (seedError as { cause?: unknown }).cause
+            } : undefined
+        });
+    }, [
+        seedHash,
+        auctionAddress,
+        liquidityManagerAddress,
+        isSeedPending,
+        isSeedConfirming,
+        isSeedSuccess,
+        seedError
+    ]);
+
     // Monitor claim transaction
     useEffect(() => {
         console.log('[Claim TX Monitor]', {
@@ -341,6 +384,22 @@ export default function AuctionPage() {
             alert('Tokens claimed successfully! 🎉');
         }
     }, [claimHash, isClaimPending, isClaimConfirming, isClaimSuccess, claimError]);
+
+    useEffect(() => {
+        if (seedError) {
+            console.error('[Seed LP] ERROR:', seedError);
+            alert(`Seed LP failed: ${seedError.message || 'Unknown error'}`);
+        }
+    }, [seedError]);
+
+    useEffect(() => {
+        if (!usesLegacyAuctionManager) return;
+        console.warn('[Liquidity Manager] Auction pinned to legacy manager', {
+            auctionAddress,
+            auctionFundsRecipient,
+            factoryLiquidityManagerAddress
+        });
+    }, [usesLegacyAuctionManager, auctionAddress, auctionFundsRecipient, factoryLiquidityManagerAddress]);
 
     // 6. Exit and Claim Flow
     const { writeContract: writeExit, data: exitHash, isPending: isExitPending } = useWriteContract();
@@ -451,7 +510,7 @@ export default function AuctionPage() {
             return;
         }
 
-        if (tokenAmountToRelease <= 0n) {
+        if (tokenAmountToRelease <= BigInt(0)) {
             alert('Token amount must be greater than 0.');
             return;
         }
@@ -490,12 +549,22 @@ export default function AuctionPage() {
             return;
         }
 
-        if (tokenAmountToSeed <= 0n) {
+        if (tokenAmountToSeed <= BigInt(0)) {
             alert('Token amount must be greater than 0.');
             return;
         }
 
         const deadline = BigInt(Math.floor(Date.now() / 1000) + 60 * 60);
+        console.log('[Seed LP] Requesting seedLiquidityFromClearingPrice', {
+            auctionAddress,
+            liquidityManagerAddress,
+            recipient: recipientCandidate,
+            tokenAmountToSeed: tokenAmountToSeed.toString(),
+            deadline: deadline.toString(),
+            managerLpCurrencyBudget: managerLpCurrencyBudget.toString(),
+            managerLpTokenBudget: managerLpTokenBudget.toString(),
+            managerPositionManager
+        });
 
         writeSeed({
             address: liquidityManagerAddress,
@@ -503,6 +572,7 @@ export default function AuctionPage() {
             functionName: 'seedLiquidityFromClearingPrice',
             args: [auctionAddress, recipientCandidate as `0x${string}`, tokenAmountToSeed, deadline],
         });
+        console.log('[Seed LP] writeSeed dispatched');
     };
 
     // Multi-step approval flow for Permit2
@@ -851,6 +921,14 @@ export default function AuctionPage() {
                                     <div className="text-[10px] text-zinc-500 font-mono break-all">
                                         Position Manager: {managerHasPositionManager ? managerPositionManager : 'Not configured'}
                                     </div>
+                                    <div className="text-[10px] text-zinc-500">
+                                        Primary path: Finalize Auction → Seed LP (V4). Release LP Assets is fallback/manual.
+                                    </div>
+                                    {usesLegacyAuctionManager && (
+                                        <div className="rounded border border-amber-800 bg-amber-950/40 p-2 text-[10px] text-amber-300">
+                                            Legacy manager detected for this auction. Seed LP can fail on this auction; new auctions use the latest factory manager.
+                                        </div>
+                                    )}
                                     <div className="grid grid-cols-2 gap-2 text-[10px]">
                                         <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
                                             <div className="text-zinc-500">Registered</div>
@@ -939,7 +1017,7 @@ export default function AuctionPage() {
                                                 || !managerHasPositionManager
                                                 || !managerFinalized
                                                 || managerReleased
-                                                || managerLpCurrencyBudget <= 0n
+                                                || managerLpCurrencyBudget <= BigInt(0)
                                                 || isSeedPending
                                                 || isSeedConfirming
                                             }
@@ -954,7 +1032,7 @@ export default function AuctionPage() {
                                             className="w-full py-2.5 bg-zinc-200 hover:bg-white text-black font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
                                             {isReleasePending || isReleaseConfirming ? <Loader2 className="animate-spin h-3 w-3" /> : null}
-                                            {managerReleased ? 'Liquidity Released' : 'Release LP Assets'}
+                                            {managerReleased ? 'Liquidity Released' : 'Release LP Assets (Fallback)'}
                                         </button>
                                     </div>
                                 </div>

@@ -1,11 +1,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import { useAccount, useReadContract, useReadContracts, usePublicClient, useBlockNumber } from 'wagmi';
+import { useParams } from 'next/navigation';
+import { useReadContract, useReadContracts, useBlockNumber } from 'wagmi';
 import { IDENTITY_REGISTRY, TRUTH_STAKE, AGENT_TOKEN_FACTORY } from '@/lib/contracts';
-import { IDENTITY_REGISTRY_ABI, TRUTH_STAKE_ABI, AGENT_TOKEN_FACTORY_ABI, CCA_ABI, ERC20_ABI } from '@/lib/abis';
-import { formatUnits, formatEther } from 'viem';
+import { IDENTITY_REGISTRY_ABI, TRUTH_STAKE_ABI, AGENT_TOKEN_FACTORY_ABI, CCA_ABI } from '@/lib/abis';
+import { formatUnits, type Address } from 'viem';
 import {
     Shield,
     ShieldCheck,
@@ -16,19 +16,39 @@ import {
     ExternalLink,
     Copy,
     Gavel,
-    TrendingUp,
-    Clock,
     FileText,
-    History
+    History,
+    Wallet,
+    MessageSquare
 } from 'lucide-react';
 import Link from 'next/link';
+import AgentMarketPanel from '@/components/AgentMarketPanel';
+
+type AgentMetadata = {
+    name?: string;
+    description?: string;
+    image?: string;
+    symbol?: string;
+    ticker?: string;
+};
+
+type AgentRecord = {
+    id: string;
+    name?: string;
+    description?: string;
+    image?: string;
+    ticker?: string;
+};
+
+type AgentsApiResponse = {
+    agents?: AgentRecord[];
+};
 
 export default function AgentDetailPage() {
     const params = useParams();
-    const router = useRouter();
     const agentId = BigInt(params.id as string);
-    const [metadata, setMetadata] = useState<any>(null);
-    const [activeTab, setActiveTab] = useState<'overview' | 'holders' | 'activity'>('overview');
+    const [metadata, setMetadata] = useState<AgentMetadata | null>(null);
+    const [activeTab, setActiveTab] = useState<'overview' | 'holders' | 'activity' | 'claims'>('overview');
 
     // 1. Fetch Agent Identity
     const { data: agentWallet } = useReadContract({
@@ -57,6 +77,13 @@ export default function AgentDetailPage() {
         address: TRUTH_STAKE,
         abi: TRUTH_STAKE_ABI,
         functionName: 'agentTotalSlashed',
+        args: [agentId]
+    });
+
+    const { data: rewardVault } = useReadContract({
+        address: TRUTH_STAKE,
+        abi: TRUTH_STAKE_ABI,
+        functionName: 'agentRewardVault',
         args: [agentId]
     });
 
@@ -96,6 +123,14 @@ export default function AgentDetailPage() {
         ]
     });
 
+    const { data: startBlock } = useReadContract({
+        address: auctionAddress,
+        abi: CCA_ABI,
+        functionName: 'startBlock',
+        args: [],
+        query: { enabled: !!auctionAddress }
+    });
+
     // 5. Fetch Metadata (DB First, then IPFS Fallback)
     useEffect(() => {
         const loadMetadata = async () => {
@@ -103,8 +138,8 @@ export default function AgentDetailPage() {
             try {
                 const res = await fetch('/api/agents');
                 if (res.ok) {
-                    const data = await res.json();
-                    const agent = data.agents?.find((a: any) => a.id === agentId.toString());
+                    const data = await res.json() as AgentsApiResponse;
+                    const agent = data.agents?.find((a) => a.id === agentId.toString());
                     if (agent) {
                         console.log('[Agent] Found in DB:', agent);
                         setMetadata({
@@ -169,6 +204,9 @@ export default function AgentDetailPage() {
 
     const isAuctionActive = hasAuction && currentBlock && endBlock ? currentBlock < endBlock : false;
     const isAuctionEnded = hasAuction && currentBlock && endBlock ? currentBlock >= endBlock : false;
+    const auctionAddressValue = auctionAddress as Address | undefined;
+    const tokenAddressValue = tokenAddress as Address | undefined;
+    const startBlockValue = startBlock as bigint | undefined;
 
     return (
         <div className="min-h-screen bg-[#050505] text-zinc-200 font-sans selection:bg-teal-900/30 p-6 md:p-12">
@@ -262,6 +300,15 @@ export default function AgentDetailPage() {
                     </div>
                 </div>
 
+                {hasAuction && (
+                    <AgentMarketPanel
+                        auctionAddress={auctionAddressValue}
+                        tokenAddress={tokenAddressValue}
+                        startBlock={startBlockValue}
+                        isAuctionEnded={!!isAuctionEnded}
+                    />
+                )}
+
                 {/* 2. Stats Grid */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <StatCard
@@ -272,9 +319,15 @@ export default function AgentDetailPage() {
                     />
                     <StatCard
                         label="Total Slashed"
-                        value={`${totalSlashed ? formatEther(totalSlashed) : '0'}`}
-                        subValue="ETH Penalized"
+                        value={`$${totalSlashed ? formatUnits(totalSlashed, 6) : '0'}`}
+                        subValue="USDC Penalized"
                         icon={<AlertTriangle className="text-red-500" size={16} />}
+                    />
+                    <StatCard
+                        label="Reward Vault"
+                        value={`$${rewardVault ? formatUnits(rewardVault, 6) : '0'}`}
+                        subValue="USDC Available"
+                        icon={<Wallet className="text-purple-500" size={16} />}
                     />
                     <StatCard
                         label="Tokens Sold"
@@ -282,18 +335,13 @@ export default function AgentDetailPage() {
                         subValue="Circulating Supply"
                         icon={<Coins className="text-yellow-500" size={16} />}
                     />
-                    <StatCard
-                        label="Holders"
-                        value="--"
-                        subValue="Unique Wallets"
-                        icon={<Users className="text-blue-500" size={16} />}
-                    />
                 </div>
 
                 {/* 3. Detailed Tabs */}
                 <div className="border-t border-white/5 pt-8">
                     <div className="flex gap-6 mb-6 border-b border-white/5 px-2">
                         <TabButton active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} label="Overview" icon={<FileText size={14} />} />
+                        <TabButton active={activeTab === 'claims'} onClick={() => setActiveTab('claims')} label="Claims" icon={<MessageSquare size={14} />} />
                         <TabButton active={activeTab === 'holders'} onClick={() => setActiveTab('holders')} label="Token Holders" icon={<Users size={14} />} />
                         <TabButton active={activeTab === 'activity'} onClick={() => setActiveTab('activity')} label="Activity Log" icon={<History size={14} />} />
                     </div>
@@ -324,6 +372,39 @@ export default function AgentDetailPage() {
                                         </ul>
                                     </div>
                                 </div>
+                            </div>
+                        )}
+                        {activeTab === 'claims' && (
+                            <div className="space-y-6">
+                                <div className="flex justify-between items-center">
+                                    <h3 className="text-lg font-bold text-white">Agent Claims</h3>
+                                    <Link href={`/claims/new?agentId=${agentId}`}>
+                                        <button className="px-4 py-2 bg-teal-600 hover:bg-teal-500 text-white font-bold text-sm rounded transition-colors flex items-center gap-2">
+                                            <MessageSquare size={14} />
+                                            Submit New Claim
+                                        </button>
+                                    </Link>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    <div className="p-4 bg-zinc-900/50 border border-white/5 rounded-lg">
+                                        <div className="text-xs text-zinc-500 uppercase mb-1">Total Claims</div>
+                                        <div className="text-xl font-mono font-bold text-white">{totalClaims}</div>
+                                    </div>
+                                    <div className="p-4 bg-zinc-900/50 border border-white/5 rounded-lg">
+                                        <div className="text-xs text-zinc-500 uppercase mb-1">Correct</div>
+                                        <div className="text-xl font-mono font-bold text-teal-400">{correctClaims}</div>
+                                    </div>
+                                    <div className="p-4 bg-zinc-900/50 border border-white/5 rounded-lg">
+                                        <div className="text-xs text-zinc-500 uppercase mb-1">Accuracy</div>
+                                        <div className="text-xl font-mono font-bold text-zinc-200">{accuracyRate}%</div>
+                                    </div>
+                                    <div className="p-4 bg-zinc-900/50 border border-white/5 rounded-lg">
+                                        <div className="text-xs text-zinc-500 uppercase mb-1">Reward Vault</div>
+                                        <div className="text-xl font-mono font-bold text-purple-400">${rewardVault ? formatUnits(rewardVault, 6) : '0'}</div>
+                                    </div>
+                                </div>
+
+                                <ClaimsList agentId={agentId.toString()} />
                             </div>
                         )}
                         {activeTab === 'holders' && (
@@ -390,4 +471,84 @@ function WalletIcon({ className }: { className?: string }) {
             <path d="M18 12a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h4v-8h-4z" />
         </svg>
     )
+}
+
+type ClaimListItem = {
+    id: string;
+    created_at: string;
+    stake: string | number;
+    resolved: boolean;
+    outcome: boolean;
+    predicted_outcome: boolean;
+    resolved_at: string | null;
+};
+
+function ClaimsList({ agentId }: { agentId: string }) {
+    const [claims, setClaims] = useState<ClaimListItem[]>([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const fetchClaims = async () => {
+            try {
+                const res = await fetch(`/api/claims?agentId=${agentId}`);
+                if (res.ok) {
+                    const data = await res.json() as { claims?: ClaimListItem[] };
+                    setClaims(data.claims || []);
+                }
+            } catch (e) {
+                console.error('Failed to fetch claims:', e);
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchClaims();
+    }, [agentId]);
+
+    if (loading) return <div className="text-zinc-500 text-sm">Loading claims...</div>;
+    if (claims.length === 0) return <div className="text-zinc-500 text-sm">No claims history found.</div>;
+
+    return (
+        <div className="space-y-3">
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 uppercase font-bold tracking-wider px-4">
+                <div className="w-[40%]">Claim / Prediction</div>
+                <div className="w-[20%] text-right">Stake</div>
+                <div className="w-[20%] text-right">Status</div>
+                <div className="w-[20%] text-right">Resolved</div>
+            </div>
+            {claims.map((claim) => (
+                <Link key={claim.id} href={`/claims/${claim.id}`} className="block">
+                    <div className="p-4 rounded-lg bg-zinc-900/50 border border-white/5 hover:bg-zinc-800 transition-colors flex items-center justify-between group">
+                        <div className="w-[40%]">
+                            <div className="text-xs font-mono text-zinc-300 group-hover:text-white truncate">
+                                {claim.id}
+                            </div>
+                            <div className="text-[10px] text-zinc-500">
+                                {new Date(claim.created_at).toLocaleString()}
+                            </div>
+                        </div>
+                        <div className="w-[20%] text-right font-mono text-xs text-zinc-300">
+                            ${(Number(claim.stake) / 1e6).toFixed(2)}
+                        </div>
+                        <div className="w-[20%] text-right">
+                            {claim.resolved ? (
+                                <span className={`text-[10px] px-2 py-0.5 rounded border ${claim.outcome === claim.predicted_outcome
+                                        ? 'border-teal-900/50 bg-teal-950/30 text-teal-500'
+                                        : 'border-red-900/50 bg-red-950/30 text-red-500'
+                                    }`}>
+                                    {claim.outcome === claim.predicted_outcome ? 'CORRECT' : 'WRONG'}
+                                </span>
+                            ) : (
+                                <span className="text-[10px] px-2 py-0.5 rounded border border-yellow-900/50 bg-yellow-950/30 text-yellow-500">
+                                    PENDING
+                                </span>
+                            )}
+                        </div>
+                        <div className="w-[20%] text-right text-[10px] text-zinc-500">
+                            {claim.resolved_at ? new Date(claim.resolved_at).toLocaleDateString() : '---'}
+                        </div>
+                    </div>
+                </Link>
+            ))}
+        </div>
+    );
 }

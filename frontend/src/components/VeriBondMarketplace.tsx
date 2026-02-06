@@ -48,14 +48,15 @@ const fetchAgents = async (): Promise<Agent[]> => {
         id: row.id,
         name: row.name,
         ticker: row.ticker || 'UNK',
-        ens: row.address.slice(0, 6) + '...' + row.address.slice(-4), // Mock ENS for now
-        status: row.is_active ? 'active' : 'slashed', // Simplified status mapping
-        price: 0, // Placeholder
+        ens: row.owner ? (row.owner.slice(0, 6) + '...' + row.owner.slice(-4)) : 'Unknown',
+        status: !row.is_active ? 'slashed' : (row.auction_status === 'active' ? 'auction' : 'active'),
+        price: Number(row.total_cleared || 0), // Use total cleared as price/mcap proxy
         change: 0,
-        accuracy: 100, // Placeholder or fetch real trust score if added to DB
+        accuracy: 100,
         staked: '0 USDC',
         image: row.image,
-        description: row.description
+        description: row.description,
+        auctionProgress: 0 // TODO: Calculate progress from start/end blocks
     }));
 };
 

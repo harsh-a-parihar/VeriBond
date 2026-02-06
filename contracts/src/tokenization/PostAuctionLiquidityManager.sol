@@ -38,6 +38,13 @@ interface IMinimalV4PositionManager {
 }
 
 /**
+ * @notice Minimal Permit2 interface for PositionManager token pulls.
+ */
+interface IMinimalPermit2 {
+    function approve(address token, address spender, uint160 amount, uint48 expiration) external;
+}
+
+/**
  * @title PostAuctionLiquidityManager
  * @notice Receives CCA proceeds/unsold tokens and prepares capped LP budget.
  * @dev Intended as a minimal-breaking extension for existing AgentTokenFactory flow.
@@ -48,6 +55,7 @@ contract PostAuctionLiquidityManager is Ownable, ReentrancyGuard {
     uint256 private constant Q96 = 0x1000000000000000000000000;
     uint256 private constant ACTION_MINT_POSITION = 0x02;
     uint256 private constant ACTION_CLOSE_CURRENCY = 0x12;
+    address private constant DEFAULT_PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
 
     struct AuctionRecord {
         uint256 agentId;
@@ -70,6 +78,7 @@ contract PostAuctionLiquidityManager is Ownable, ReentrancyGuard {
     address public factory;
     uint256 public maxCurrencyForLP; // USDC is 6 decimals; 50e6 = 50 USDC in test mode
     address public positionManager;
+    address public permit2;
     uint24 public poolLPFee = 10_000; // 1%
     int24 public poolTickSpacing = 60;
     address public poolHooks;
@@ -77,6 +86,7 @@ contract PostAuctionLiquidityManager is Ownable, ReentrancyGuard {
     event FactoryUpdated(address indexed oldFactory, address indexed newFactory);
     event MaxCurrencyForLPUpdated(uint256 oldValue, uint256 newValue);
     event PositionManagerUpdated(address indexed oldValue, address indexed newValue);
+    event Permit2Updated(address indexed oldValue, address indexed newValue);
     event PoolConfigUpdated(uint24 fee, int24 tickSpacing, address hooks);
     event AuctionRegistered(
         address indexed auction,
@@ -139,6 +149,7 @@ contract PostAuctionLiquidityManager is Ownable, ReentrancyGuard {
         if (_factory == address(0)) revert InvalidAddress();
         factory = _factory;
         maxCurrencyForLP = _maxCurrencyForLP;
+        permit2 = DEFAULT_PERMIT2;
     }
 
     function setFactory(address _factory) external onlyOwner {
@@ -156,6 +167,12 @@ contract PostAuctionLiquidityManager is Ownable, ReentrancyGuard {
         if (_positionManager == address(0)) revert InvalidAddress();
         emit PositionManagerUpdated(positionManager, _positionManager);
         positionManager = _positionManager;
+    }
+
+    function setPermit2(address _permit2) external onlyOwner {
+        if (_permit2 == address(0)) revert InvalidAddress();
+        emit Permit2Updated(permit2, _permit2);
+        permit2 = _permit2;
     }
 
     function setPoolConfig(uint24 fee, int24 tickSpacing, address hooks) external onlyOwner {
@@ -344,6 +361,13 @@ contract PostAuctionLiquidityManager is Ownable, ReentrancyGuard {
         uint256 beforeCurrencyBalance = IERC20(record.currency).balanceOf(address(this));
         uint256 beforeTokenBalance = IERC20(record.token).balanceOf(address(this));
 
+        // PositionManager v4 settles ERC20 pulls through Permit2.
+        _approvePermit2(currency0, amount0Max);
+        _approvePermit2(currency1, amount1Max);
+
+        // Keep direct approvals for local mocks/backward compatibility, but always approve Permit2 too.
+        IERC20(currency0).forceApprove(permit2, amount0Max);
+        IERC20(currency1).forceApprove(permit2, amount1Max);
         IERC20(currency0).forceApprove(positionManager, amount0Max);
         IERC20(currency1).forceApprove(positionManager, amount1Max);
 
@@ -366,6 +390,8 @@ contract PostAuctionLiquidityManager is Ownable, ReentrancyGuard {
 
         manager.modifyLiquidities(abi.encode(actions, params), deadline);
 
+        IERC20(currency0).forceApprove(permit2, 0);
+        IERC20(currency1).forceApprove(permit2, 0);
         IERC20(currency0).forceApprove(positionManager, 0);
         IERC20(currency1).forceApprove(positionManager, 0);
 
@@ -394,6 +420,12 @@ contract PostAuctionLiquidityManager is Ownable, ReentrancyGuard {
             tokenSpent,
             liquidity
         );
+    }
+
+    function _approvePermit2(address token, uint256 amount) internal {
+        if (permit2 == address(0) || amount == 0 || permit2.code.length == 0) return;
+        if (amount > type(uint160).max) revert InvalidAmount();
+        IMinimalPermit2(permit2).approve(token, positionManager, uint160(amount), type(uint48).max);
     }
 
     function _deriveSqrtPriceX96(uint256 clearingPriceQ96, bool tokenIsCurrency0) internal pure returns (uint160) {
