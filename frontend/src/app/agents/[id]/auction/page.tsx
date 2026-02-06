@@ -113,6 +113,30 @@ export default function AuctionPage() {
         query: { enabled: !!auctionAddress && hasLiquidityManager }
     });
 
+    const { data: managerPositionManager, refetch: refetchManagerPositionManager } = useReadContract({
+        address: hasLiquidityManager ? liquidityManagerAddress : undefined,
+        abi: POST_AUCTION_LIQUIDITY_MANAGER_ABI,
+        functionName: 'positionManager',
+        args: [],
+        query: { enabled: hasLiquidityManager }
+    });
+
+    const { data: managerLiquiditySeeded, refetch: refetchManagerLiquiditySeeded } = useReadContract({
+        address: hasLiquidityManager ? liquidityManagerAddress : undefined,
+        abi: POST_AUCTION_LIQUIDITY_MANAGER_ABI,
+        functionName: 'liquiditySeeded',
+        args: auctionAddress ? [auctionAddress] : undefined,
+        query: { enabled: !!auctionAddress && hasLiquidityManager }
+    });
+
+    const { data: managerPositionTokenId, refetch: refetchManagerPositionTokenId } = useReadContract({
+        address: hasLiquidityManager ? liquidityManagerAddress : undefined,
+        abi: POST_AUCTION_LIQUIDITY_MANAGER_ABI,
+        functionName: 'auctionPositionTokenId',
+        args: auctionAddress ? [auctionAddress] : undefined,
+        query: { enabled: !!auctionAddress && hasLiquidityManager }
+    });
+
     // Read auction timing
     const { data: startBlock } = useReadContract({
         address: auctionAddress,
@@ -174,6 +198,9 @@ export default function AuctionPage() {
     const managerCurrencyRaised = managerRecord?.[5] ?? 0n;
     const managerLpCurrencyBudget = managerRecord?.[6] ?? 0n;
     const managerLpTokenBudget = managerRecord?.[7] ?? 0n;
+    const managerHasPositionManager = !!managerPositionManager && managerPositionManager !== ZERO_ADDRESS;
+    const managerSeeded = managerLiquiditySeeded ?? false;
+    const managerPositionId = managerPositionTokenId ?? 0n;
 
     // Calculate estimated time remaining
     const blocksRemaining = currentBlock && endBlock ? (endBlock > currentBlock ? endBlock - currentBlock : BigInt(0)) : BigInt(0);
@@ -255,12 +282,14 @@ export default function AuctionPage() {
     const { writeContract: writeClaim, data: claimHash, isPending: isClaimPending, error: claimError } = useWriteContract();
     const { writeContract: writeFinalize, data: finalizeHash, isPending: isFinalizePending, error: finalizeError } = useWriteContract();
     const { writeContract: writeRelease, data: releaseHash, isPending: isReleasePending, error: releaseError } = useWriteContract();
+    const { writeContract: writeSeed, data: seedHash, isPending: isSeedPending, error: seedError } = useWriteContract();
 
     // 5. Transaction Receipts
     const { isSuccess: isBidSuccess, isLoading: isBidConfirming } = useWaitForTransactionReceipt({ hash: bidHash });
     const { isSuccess: isClaimSuccess, isLoading: isClaimConfirming } = useWaitForTransactionReceipt({ hash: claimHash });
     const { isSuccess: isFinalizeSuccess, isLoading: isFinalizeConfirming } = useWaitForTransactionReceipt({ hash: finalizeHash });
     const { isSuccess: isReleaseSuccess, isLoading: isReleaseConfirming } = useWaitForTransactionReceipt({ hash: releaseHash });
+    const { isSuccess: isSeedSuccess, isLoading: isSeedConfirming } = useWaitForTransactionReceipt({ hash: seedHash });
 
     useEffect(() => {
         if (isBidSuccess) {
@@ -274,14 +303,23 @@ export default function AuctionPage() {
     useEffect(() => {
         if (isFinalizeSuccess) {
             refetchManagerAuction();
+            refetchManagerPositionManager();
         }
-    }, [isFinalizeSuccess, refetchManagerAuction]);
+    }, [isFinalizeSuccess, refetchManagerAuction, refetchManagerPositionManager]);
 
     useEffect(() => {
         if (isReleaseSuccess) {
             refetchManagerAuction();
         }
     }, [isReleaseSuccess, refetchManagerAuction]);
+
+    useEffect(() => {
+        if (isSeedSuccess) {
+            refetchManagerAuction();
+            refetchManagerLiquiditySeeded();
+            refetchManagerPositionTokenId();
+        }
+    }, [isSeedSuccess, refetchManagerAuction, refetchManagerLiquiditySeeded, refetchManagerPositionTokenId]);
 
     // Monitor claim transaction
     useEffect(() => {
@@ -423,6 +461,47 @@ export default function AuctionPage() {
             abi: POST_AUCTION_LIQUIDITY_MANAGER_ABI,
             functionName: 'releaseLiquidityAssets',
             args: [auctionAddress, recipientCandidate as `0x${string}`, tokenAmountToRelease],
+        });
+    };
+
+    const handleSeedLiquidity = () => {
+        if (!hasLiquidityManager || !liquidityManagerAddress || !auctionAddress) {
+            alert('Liquidity manager or auction address missing.');
+            return;
+        }
+        if (!managerHasPositionManager) {
+            alert('Position manager is not configured on liquidity manager.');
+            return;
+        }
+
+        const recipientCandidate = (lpRecipient || address || '').trim();
+        if (!recipientCandidate || !recipientCandidate.startsWith('0x') || recipientCandidate.length !== 42) {
+            alert('Enter a valid position recipient address.');
+            return;
+        }
+
+        let tokenAmountToSeed: bigint;
+        try {
+            tokenAmountToSeed = lpTokenAmount.trim()
+                ? parseUnits(lpTokenAmount.trim(), 18)
+                : managerLpTokenBudget;
+        } catch {
+            alert('Invalid token amount.');
+            return;
+        }
+
+        if (tokenAmountToSeed <= 0n) {
+            alert('Token amount must be greater than 0.');
+            return;
+        }
+
+        const deadline = BigInt(Math.floor(Date.now() / 1000) + 60 * 60);
+
+        writeSeed({
+            address: liquidityManagerAddress,
+            abi: POST_AUCTION_LIQUIDITY_MANAGER_ABI,
+            functionName: 'seedLiquidityFromClearingPrice',
+            args: [auctionAddress, recipientCandidate as `0x${string}`, tokenAmountToSeed, deadline],
         });
     };
 
@@ -769,6 +848,9 @@ export default function AuctionPage() {
                                     <div className="text-[10px] text-zinc-500 font-mono break-all">
                                         Manager: {hasLiquidityManager ? liquidityManagerAddress : 'Not configured'}
                                     </div>
+                                    <div className="text-[10px] text-zinc-500 font-mono break-all">
+                                        Position Manager: {managerHasPositionManager ? managerPositionManager : 'Not configured'}
+                                    </div>
                                     <div className="grid grid-cols-2 gap-2 text-[10px]">
                                         <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
                                             <div className="text-zinc-500">Registered</div>
@@ -789,6 +871,12 @@ export default function AuctionPage() {
                                             </div>
                                         </div>
                                         <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
+                                            <div className="text-zinc-500">LP Seeded</div>
+                                            <div className={managerSeeded ? 'text-teal-400 font-bold' : 'text-zinc-400'}>
+                                                {managerSeeded ? 'YES' : 'NO'}
+                                            </div>
+                                        </div>
+                                        <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
                                             <div className="text-zinc-500">Raised (USDC)</div>
                                             <div className="text-zinc-200 font-mono">{formatUnits(managerCurrencyRaised, 6)}</div>
                                         </div>
@@ -800,17 +888,23 @@ export default function AuctionPage() {
                                             <div className="text-zinc-500">LP Token Budget</div>
                                             <div className="text-zinc-200 font-mono">{formatUnits(managerLpTokenBudget, 18)}</div>
                                         </div>
+                                        <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
+                                            <div className="text-zinc-500">LP Position ID</div>
+                                            <div className="text-zinc-200 font-mono">{managerPositionId.toString()}</div>
+                                        </div>
                                     </div>
 
-                                    {(finalizeError || releaseError) && (
+                                    {(finalizeError || releaseError || seedError) && (
                                         <div className="text-xs text-red-400 border border-red-900/40 bg-red-950/10 rounded p-2">
-                                            {(finalizeError?.message || releaseError?.message || '').split('\n')[0]}
+                                            {(finalizeError?.message || releaseError?.message || seedError?.message || '').split('\n')[0]}
                                         </div>
                                     )}
 
-                                    {(isFinalizeSuccess || isReleaseSuccess) && (
+                                    {(isFinalizeSuccess || isReleaseSuccess || isSeedSuccess) && (
                                         <div className="text-xs text-green-400 border border-green-900/40 bg-green-950/10 rounded p-2">
-                                            {isReleaseSuccess ? 'LP assets released successfully.' : 'Auction finalized successfully.'}
+                                            {isSeedSuccess
+                                                ? 'LP seeded on Uniswap v4 successfully.'
+                                                : (isReleaseSuccess ? 'LP assets released successfully.' : 'Auction finalized successfully.')}
                                         </div>
                                     )}
 
@@ -838,6 +932,22 @@ export default function AuctionPage() {
                                             placeholder={`Token amount (default full: ${formatUnits(managerLpTokenBudget, 18)})`}
                                             className="w-full bg-[#050505] border border-zinc-800 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-yellow-900/50"
                                         />
+                                        <button
+                                            onClick={handleSeedLiquidity}
+                                            disabled={
+                                                !hasLiquidityManager
+                                                || !managerHasPositionManager
+                                                || !managerFinalized
+                                                || managerReleased
+                                                || managerLpCurrencyBudget <= 0n
+                                                || isSeedPending
+                                                || isSeedConfirming
+                                            }
+                                            className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {isSeedPending || isSeedConfirming ? <Loader2 className="animate-spin h-3 w-3" /> : null}
+                                            {isSeedSuccess ? 'LP Seeded' : 'Seed LP (V4)'}
+                                        </button>
                                         <button
                                             onClick={handleReleaseLiquidity}
                                             disabled={!hasLiquidityManager || !managerFinalized || managerReleased || isReleasePending || isReleaseConfirming}
