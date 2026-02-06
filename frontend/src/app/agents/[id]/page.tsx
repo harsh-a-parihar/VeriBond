@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import { useReadContract, useReadContracts, useBlockNumber } from 'wagmi';
+import { useAccount, useReadContract, useReadContracts, useBlockNumber } from 'wagmi';
 import { IDENTITY_REGISTRY, TRUTH_STAKE, AGENT_TOKEN_FACTORY } from '@/lib/contracts';
 import { IDENTITY_REGISTRY_ABI, TRUTH_STAKE_ABI, AGENT_TOKEN_FACTORY_ABI, CCA_ABI } from '@/lib/abis';
 import { formatUnits, type Address } from 'viem';
@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import AgentMarketPanel from '@/components/AgentMarketPanel';
+import AgentChatRailPanel from '@/components/AgentChatRailPanel';
 
 type AgentMetadata = {
     name?: string;
@@ -30,6 +31,7 @@ type AgentMetadata = {
     image?: string;
     symbol?: string;
     ticker?: string;
+    endpoints?: Array<{ type?: string; value?: string }>;
 };
 
 type AgentRecord = {
@@ -38,6 +40,9 @@ type AgentRecord = {
     description?: string;
     image?: string;
     ticker?: string;
+    claimed_name?: string;
+    trust_score?: number;
+    owner?: string;
 };
 
 type AgentsApiResponse = {
@@ -47,7 +52,11 @@ type AgentsApiResponse = {
 export default function AgentDetailPage() {
     const params = useParams();
     const agentId = BigInt(params.id as string);
+    const { address } = useAccount();
     const [metadata, setMetadata] = useState<AgentMetadata | null>(null);
+    const [claimedName, setClaimedName] = useState<string | null>(null);
+    const [agentOwner, setAgentOwner] = useState<string | null>(null);
+    const [dbTrustScore, setDbTrustScore] = useState<number>(0);
     const [activeTab, setActiveTab] = useState<'overview' | 'holders' | 'activity' | 'claims'>('overview');
 
     // 1. Fetch Agent Identity
@@ -134,6 +143,8 @@ export default function AgentDetailPage() {
     // 5. Fetch Metadata (DB First, then IPFS Fallback)
     useEffect(() => {
         const loadMetadata = async () => {
+            let dbMetadata: AgentMetadata | null = null;
+
             // Strategy A: Check local DB (Fastest)
             try {
                 const res = await fetch('/api/agents');
@@ -142,13 +153,23 @@ export default function AgentDetailPage() {
                     const agent = data.agents?.find((a) => a.id === agentId.toString());
                     if (agent) {
                         console.log('[Agent] Found in DB:', agent);
-                        setMetadata({
+                        dbMetadata = {
                             name: agent.name,
                             description: agent.description,
                             image: agent.image,
                             symbol: agent.ticker
-                        });
-                        return; // Found in DB, skip IPFS
+                        };
+                        setMetadata(dbMetadata);
+                        // ENS subname data
+                        if (agent.claimed_name) {
+                            setClaimedName(agent.claimed_name);
+                        }
+                        if (agent.trust_score !== undefined) {
+                            setDbTrustScore(agent.trust_score);
+                        }
+                        if (agent.owner) {
+                            setAgentOwner(agent.owner.toLowerCase());
+                        }
                     }
                 }
             } catch (e) {
@@ -158,6 +179,17 @@ export default function AgentDetailPage() {
             // Strategy B: IPFS (If not in DB or DB fetch failed)
             if (tokenURI) {
                 console.log('[Agent] Fetching from IPFS (DB missed)...', tokenURI);
+                if (tokenURI.startsWith('data:application/json;base64,')) {
+                    try {
+                        const base64 = tokenURI.slice('data:application/json;base64,'.length);
+                        const decoded = JSON.parse(atob(base64)) as AgentMetadata;
+                        setMetadata((prev) => ({ ...(prev ?? dbMetadata ?? {}), ...decoded }));
+                        return;
+                    } catch (e) {
+                        console.warn('[Agent] Failed to decode data URI metadata:', e);
+                    }
+                }
+
                 const gateways = [
                     'https://ipfs.io/ipfs/',
                     'https://gateway.pinata.cloud/ipfs/',
@@ -170,13 +202,20 @@ export default function AgentDetailPage() {
                         const url = `${gateway}${hash}`;
                         const res = await fetch(url);
                         if (!res.ok) throw new Error(`Status ${res.status}`);
-                        const json = await res.json();
-                        setMetadata(json);
+                        const json = await res.json() as AgentMetadata;
+                        setMetadata((prev) => ({ ...(prev ?? dbMetadata ?? {}), ...json }));
                         return;
                     } catch (e) {
                         console.warn(`[Agent] Gateway failed ${gateway}:`, e);
                     }
                 }
+            }
+
+            if (!dbMetadata) {
+                setMetadata({
+                    name: `Agent ${agentId.toString()}`,
+                    description: '',
+                });
             }
         };
 
@@ -246,11 +285,28 @@ export default function AgentDetailPage() {
                         </p>
 
                         <div className="flex flex-wrap gap-4 pt-2">
+                            {/* Claimed Name Badge */}
+                            {claimedName && (
+                                <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-900/20 border border-purple-900/40 rounded text-purple-400 text-xs font-bold font-mono">
+                                    <span>{claimedName}.veribond</span>
+                                </div>
+                            )}
+
                             {/* Trust Badge */}
                             <div className="flex items-center gap-2 px-3 py-1.5 bg-green-900/10 border border-green-900/30 rounded text-green-400 text-xs font-medium">
                                 <ShieldCheck size={14} />
-                                <span>Trust Score: {trustScore}/100</span>
+                                <span>Trust Score: {dbTrustScore || trustScore}/100</span>
                             </div>
+
+                            {/* Claim Name Button (Owner only, trust >= 50, no existing name) */}
+                            {!claimedName && dbTrustScore >= 50 && address?.toLowerCase() === agentOwner && (
+                                <button
+                                    className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 border border-purple-500 rounded text-white text-xs font-medium transition-colors"
+                                    onClick={() => alert('Claim Name feature coming soon! Deploy AgentNames contract first.')}
+                                >
+                                    Claim .veribond Name
+                                </button>
+                            )}
 
                             {/* Wallet Address */}
                             <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-white/5 rounded text-zinc-400 text-xs font-mono group cursor-pointer hover:bg-zinc-800 hover:text-white transition-colors">
@@ -308,6 +364,12 @@ export default function AgentDetailPage() {
                         isAuctionEnded={!!isAuctionEnded}
                     />
                 )}
+
+                <AgentChatRailPanel
+                    agentId={agentId.toString()}
+                    walletAddress={address}
+                    endpoints={metadata?.endpoints}
+                />
 
                 {/* 2. Stats Grid */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -531,11 +593,11 @@ function ClaimsList({ agentId }: { agentId: string }) {
                         </div>
                         <div className="w-[20%] text-right">
                             {claim.resolved ? (
-                                <span className={`text-[10px] px-2 py-0.5 rounded border ${claim.outcome === claim.predicted_outcome
-                                        ? 'border-teal-900/50 bg-teal-950/30 text-teal-500'
-                                        : 'border-red-900/50 bg-red-950/30 text-red-500'
+                                <span className={`text-[10px] px-2 py-0.5 rounded border ${claim.outcome
+                                    ? 'border-teal-900/50 bg-teal-950/30 text-teal-500'
+                                    : 'border-red-900/50 bg-red-950/30 text-red-500'
                                     }`}>
-                                    {claim.outcome === claim.predicted_outcome ? 'CORRECT' : 'WRONG'}
+                                    {claim.outcome ? 'CORRECT' : 'WRONG'}
                                 </span>
                             ) : (
                                 <span className="text-[10px] px-2 py-0.5 rounded border border-yellow-900/50 bg-yellow-950/30 text-yellow-500">

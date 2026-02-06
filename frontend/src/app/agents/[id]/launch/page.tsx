@@ -131,7 +131,7 @@ export default function LaunchTokenPage() {
                 <AlertCircle className="mb-4 text-red-500" />
                 <h1 className="text-xl font-bold text-red-500">Access Denied</h1>
                 <p className="text-zinc-500 mt-2">Only the owner of Agent #{agentId?.toString()} can launch a token.</p>
-                <button onClick={() => router.push('/dashboard')} className="mt-8 text-xs underline text-zinc-400 hover:text-white">Return Home</button>
+                <button onClick={() => router.push('/marketplace')} className="mt-8 text-xs underline text-zinc-400 hover:text-white">Return Home</button>
             </div>
         );
     }

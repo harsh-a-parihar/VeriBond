@@ -232,9 +232,9 @@ function SubmitClaimPage() {
             {/* Navigation */}
             <nav className="fixed top-0 w-full z-50 border-b border-white/5 bg-[#09090b]/80 backdrop-blur-xl h-16 flex items-center justify-between px-6 lg:px-12">
                 <div className="flex items-center gap-6">
-                    <Link href="/dashboard" className="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                    <Link href="/marketplace" className="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors">
                         <ArrowLeft size={16} />
-                        <span className="text-xs font-medium">Back to Dashboard</span>
+                        <span className="text-xs font-medium">Back</span>
                     </Link>
                 </div>
                 <div className="flex items-center gap-3">
@@ -300,10 +300,10 @@ function SubmitClaimPage() {
                         </div>
                         <div className="flex gap-4 justify-center">
                             <Link
-                                href="/dashboard"
+                                href="/marketplace"
                                 className="px-6 py-3 rounded-lg bg-teal-600 text-white font-semibold hover:bg-teal-500 transition-all"
                             >
-                                View Dashboard
+                                View Marketplace
                             </Link>
                             <button
                                 onClick={() => { setStep('form'); setClaimDescription(''); }}

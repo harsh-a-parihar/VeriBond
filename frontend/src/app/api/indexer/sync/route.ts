@@ -50,6 +50,19 @@ async function ensureSchema() {
       );
     `);
 
+        // Trust Score Columns (Migration)
+        await client.query(`
+            ALTER TABLE agents 
+            ADD COLUMN IF NOT EXISTS correct_claims INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS slashed_claims INTEGER DEFAULT 0;
+        `);
+
+        // ENS Subname Column (Migration)
+        await client.query(`
+            ALTER TABLE agents 
+            ADD COLUMN IF NOT EXISTS claimed_name TEXT;
+        `);
+
         // 3. Claims Table
         await client.query(`
       CREATE TABLE IF NOT EXISTS claims (
@@ -304,13 +317,22 @@ export async function GET(request: Request) {
             `, [claimId, wasCorrect]);
 
             // Update Agent Metrics (Slash / Revenue)
+            // Update Agent Metrics (Slash / Revenue / Trust)
             if (wasCorrect) {
                 await client.query(`
-                    UPDATE agents SET total_revenue = total_revenue + $2 WHERE id = $1
+                    UPDATE agents SET 
+                        total_revenue = total_revenue + $2,
+                        correct_claims = correct_claims + 1,
+                        trust_score = LEAST(100, GREATEST(0, (correct_claims + 1) * 10 - (slashed_claims * 50)))
+                    WHERE id = $1
                 `, [agentId.toString(), bonusAmount?.toString() || '0']);
             } else {
                 await client.query(`
-                    UPDATE agents SET total_slashed = total_slashed + $2 WHERE id = $1
+                    UPDATE agents SET 
+                        total_slashed = total_slashed + $2,
+                        slashed_claims = slashed_claims + 1,
+                        trust_score = LEAST(100, GREATEST(0, (correct_claims * 10) - ((slashed_claims + 1) * 50)))
+                    WHERE id = $1
                 `, [agentId.toString(), slashAmount?.toString() || '0']);
             }
         }

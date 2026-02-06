@@ -7,8 +7,8 @@ import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts, useReadContract } from 'wagmi';
 import { formatDistanceToNow, isPast, addSeconds } from 'date-fns';
 import { useClaimDetails } from '@/hooks';
-import { CONTRACTS, UMA_RESOLVER, UMA_TESTNET_ERC20 } from '@/lib/contracts';
-import { TRUTH_STAKE_ABI, UMA_RESOLVER_ABI, ERC20_ABI } from '@/lib/abis';
+import { CONTRACTS, UMA_RESOLVER, UMA_TESTNET_ERC20, UMA_OPTIMISTIC_ORACLE_V3 } from '@/lib/contracts';
+import { TRUTH_STAKE_ABI, UMA_RESOLVER_ABI, ERC20_ABI, OPTIMISTIC_ORACLE_V3_ABI } from '@/lib/abis';
 import {
     ArrowLeft, Cpu, Clock, CheckCircle2, XCircle,
     Loader2, AlertTriangle, User, Lock, Zap, Timer, Shield
@@ -57,11 +57,13 @@ export default function ClaimDetailPage() {
     });
 
     // UMA assertion status
+    const targetUmaId = (claim?.claimHash ?? claimId) as `0x${string}`;
+
     const { data: umaStatus, refetch: refetchUmaStatus } = useReadContract({
         address: UMA_RESOLVER as `0x${string}`,
         abi: UMA_RESOLVER_ABI,
         functionName: 'getAssertionStatus',
-        args: [claimId as `0x${string}`],
+        args: [targetUmaId],
     });
 
     // UMA liveness period (5 minutes = 300 seconds)
@@ -139,25 +141,54 @@ export default function ClaimDetailPage() {
     const umaOutcome = (umaStatus as [boolean, boolean, boolean, `0x${string}`] | undefined)?.[2] ?? false;
     const umaAssertionId = (umaStatus as [boolean, boolean, boolean, `0x${string}`] | undefined)?.[3];
 
+    // Current time ticker for countdown
+    const [now, setNow] = useState(Math.floor(Date.now() / 1000));
+    useEffect(() => {
+        const interval = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+        return () => clearInterval(interval);
+    }, []);
+
+    // Fetch detailed assertion data (expiration time)
+    const { data: assertionData } = useReadContract({
+        address: UMA_OPTIMISTIC_ORACLE_V3 as `0x${string}`,
+        abi: OPTIMISTIC_ORACLE_V3_ABI,
+        functionName: 'getAssertion',
+        args: [umaAssertionId as `0x${string}`],
+        query: {
+            enabled: !!umaAssertionId && umaAssertionId !== '0x0000000000000000000000000000000000000000000000000000000000000000',
+        }
+    });
+
+    const expirationTime = assertionData?.expirationTime ? Number(assertionData.expirationTime) : 0;
+    const timeRemaining = Math.max(0, expirationTime - now);
+
     const handleRequestResolution = () => {
-        console.log('Requesting Resolution...');
+        const targetId = claim?.claimHash as `0x${string}`;
+        if (!targetId) {
+            console.error('Claim hash not found');
+            return;
+        }
+        console.log('Requesting Resolution for:', targetId);
         // For demo, use a simple claim text - in production would fetch from IPFS or storage
-        const claimText = `Agent prediction claim ${claimId.slice(0, 10)}...`;
+        const claimText = `Agent prediction claim ${targetId.slice(0, 10)}...`;
         writeRequest({
             address: UMA_RESOLVER as `0x${string}`,
             abi: UMA_RESOLVER_ABI,
             functionName: 'requestResolution',
-            args: [claimId as `0x${string}`, claimText, claim?.predictedOutcome ?? true],
+            args: [targetId, claimText, claim?.predictedOutcome ?? true],
         });
     };
 
     const handleSettle = () => {
-        console.log('Settling Assertion...');
+        const targetId = claim?.claimHash as `0x${string}`;
+        if (!targetId) return;
+
+        console.log('Settling Assertion for:', targetId);
         writeSettle({
             address: UMA_RESOLVER as `0x${string}`,
             abi: UMA_RESOLVER_ABI,
             functionName: 'settleAssertion',
-            args: [claimId as `0x${string}`],
+            args: [targetId],
         });
     };
 
@@ -195,7 +226,7 @@ export default function ClaimDetailPage() {
             {/* Navigation */}
             <nav className="fixed top-0 w-full z-50 border-b border-white/5 bg-[#09090b]/80 backdrop-blur-xl h-16 flex items-center justify-between px-6 lg:px-12">
                 <div className="flex items-center gap-6">
-                    <Link href="/dashboard" className="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                    <Link href="/marketplace" className="flex items-center gap-2 text-zinc-500 hover:text-zinc-300 transition-colors">
                         <ArrowLeft size={16} />
                         <span className="text-xs font-medium">Back</span>
                     </Link>
@@ -418,7 +449,7 @@ export default function ClaimDetailPage() {
 
                                         <button
                                             onClick={handleSettle}
-                                            disabled={!isConnected || isSettling || isSettleConfirming}
+                                            disabled={!isConnected || isSettling || isSettleConfirming || timeRemaining > 0}
                                             className="px-6 py-3 rounded-lg bg-purple-600 text-white font-semibold hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
                                         >
                                             {(isSettling || isSettleConfirming) ? (
@@ -426,9 +457,14 @@ export default function ClaimDetailPage() {
                                                     <Loader2 className="w-4 h-4 animate-spin" />
                                                     Settling...
                                                 </>
+                                            ) : timeRemaining > 0 ? (
+                                                <>
+                                                    <Clock className="w-4 h-4" />
+                                                    Wait {Math.floor(timeRemaining / 60)}:{(timeRemaining % 60).toString().padStart(2, '0')}
+                                                </>
                                             ) : (
                                                 <>
-                                                    <Timer className="w-4 h-4" />
+                                                    <CheckCircle2 className="w-4 h-4" />
                                                     Settle Assertion
                                                 </>
                                             )}

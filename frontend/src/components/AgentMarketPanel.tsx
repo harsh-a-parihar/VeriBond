@@ -259,11 +259,12 @@ function CandleChart({ candles }: { candles: Candle[] }) {
     const maxPrice = maxPriceRaw * 1.0025;
     const range = Math.max(1e-12, maxPrice - minPrice);
     const step = innerWidth / Math.max(1, candles.length);
-    const bodyWidth = Math.max(2, step * 0.6);
+    const bodyWidth = Math.min(18, Math.max(4, step * 0.72));
 
     const y = (price: number): number => top + ((maxPrice - price) / range) * innerHeight;
     const x = (index: number): number => left + index * step + step / 2;
     const yTicks = 5;
+    const flatEpsilon = Math.max(range * 0.0005, 1e-12);
 
     return (
         <div className="rounded border border-white/10 bg-zinc-950/80 p-2">
@@ -283,26 +284,33 @@ function CandleChart({ candles }: { candles: Candle[] }) {
                 })}
 
                 {candles.map((candle, idx) => {
+                    if (candle.trades === 0) return null;
+
                     const cx = x(idx);
                     const yHigh = y(candle.high);
                     const yLow = y(candle.low);
                     const yOpen = y(candle.open);
                     const yClose = y(candle.close);
-                    const bullish = candle.close >= candle.open;
-                    const color = bullish ? '#14b8a6' : '#ef4444';
+                    const delta = candle.close - candle.open;
+                    const isFlat = Math.abs(delta) <= flatEpsilon;
+                    const color = isFlat ? '#a1a1aa' : (delta > 0 ? '#14b8a6' : '#ef4444');
                     const bodyY = Math.min(yOpen, yClose);
-                    const bodyH = Math.max(1, Math.abs(yClose - yOpen));
+                    const bodyH = Math.max(2.5, Math.abs(yClose - yOpen));
+                    const wickMid = (yHigh + yLow) / 2;
+                    const wickHalf = Math.max(3, Math.abs(yLow - yHigh) / 2);
+                    const wickTop = wickMid - wickHalf;
+                    const wickBottom = wickMid + wickHalf;
 
                     return (
                         <g key={`candle-${candle.timestamp}-${idx}`}>
-                            <line x1={cx} y1={yHigh} x2={cx} y2={yLow} stroke={color} strokeWidth="1.2" />
+                            <line x1={cx} y1={wickTop} x2={cx} y2={wickBottom} stroke={color} strokeWidth="1.25" />
                             <rect
                                 x={cx - bodyWidth / 2}
                                 y={bodyY}
                                 width={bodyWidth}
                                 height={bodyH}
                                 fill={color}
-                                opacity={0.95}
+                                opacity={0.9}
                                 rx={1}
                             />
                         </g>

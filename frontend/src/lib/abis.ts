@@ -657,3 +657,102 @@ export const UMA_RESOLVER_ABI = [
         ],
     },
 ] as const;
+
+// UMA Optimistic Oracle V3 ABI
+export const OPTIMISTIC_ORACLE_V3_ABI = [
+    {
+        name: 'getAssertion',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'assertionId', type: 'bytes32' }],
+        outputs: [{
+            type: 'tuple',
+            components: [
+                { name: 'val0', type: 'bytes32' },
+                { name: 'val1', type: 'bytes32' },
+                { name: 'val2', type: 'bytes32' },
+                { name: 'val3', type: 'bytes32' },
+                { name: 'val4', type: 'bytes32' },
+                { name: 'asserter', type: 'address' },
+                { name: 'assertionTime', type: 'uint64' },
+                { name: 'settled', type: 'bool' },
+                { name: 'currency', type: 'address' },
+                { name: 'expirationTime', type: 'uint64' },
+                { name: 'val10', type: 'bytes32' },
+                { name: 'val11', type: 'bytes32' },
+                { name: 'identifier', type: 'bytes32' },
+                { name: 'val13', type: 'bytes32' },
+                { name: 'callbackRecipient', type: 'address' },
+            ]
+        }],
+    },
+] as const;
+
+// AgentNames ABI (ENS-like subnames for verified agents)
+export const AGENT_NAMES_ABI = [
+    // Events
+    {
+        name: 'NameClaimed',
+        type: 'event',
+        inputs: [
+            { name: 'agentId', type: 'uint256', indexed: true },
+            { name: 'name', type: 'string', indexed: false },
+            { name: 'claimedBy', type: 'address', indexed: false },
+        ],
+    },
+    {
+        name: 'NameRevoked',
+        type: 'event',
+        inputs: [
+            { name: 'agentId', type: 'uint256', indexed: true },
+            { name: 'name', type: 'string', indexed: false },
+        ],
+    },
+    // Read functions
+    {
+        name: 'agentToName',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'agentId', type: 'uint256' }],
+        outputs: [{ type: 'string' }],
+    },
+    {
+        name: 'nameToAgent',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'name', type: 'string' }],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'getFullName',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'agentId', type: 'uint256' }],
+        outputs: [{ type: 'string' }],
+    },
+    {
+        name: 'getAgentByName',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'name', type: 'string' }],
+        outputs: [{ type: 'uint256' }],
+    },
+    // Write functions
+    {
+        name: 'claimName',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [
+            { name: 'agentId', type: 'uint256' },
+            { name: 'name', type: 'string' },
+        ],
+        outputs: [],
+    },
+    {
+        name: 'revokeName',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [{ name: 'agentId', type: 'uint256' }],
+        outputs: [],
+    },
+] as const;

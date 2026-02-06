@@ -21,6 +21,9 @@ export const UMA_TESTNET_ERC20 = '0x7E6d9618Ba8a87421609352d6e711958A97e2512';
 export const UMA_FINDER = '0xfF4Ec014E3CBE8f64a95bb022F1623C6e456F7dB';
 export const UMA_RESOLVER = '0xad5761dfe3ff633ece8ac5b7b6b0e2d2301f56e7';
 
+// Agent Names (ENS-like subnames) - UPDATE AFTER DEPLOYMENT
+export const AGENT_NAMES = '0x0000000000000000000000000000000000000000';
+
 // Backward compatibility (deprecated object)
 export const CONTRACTS = {
     TRUTH_STAKE,
@@ -30,6 +33,7 @@ export const CONTRACTS = {
     USDC,
     AGENT_TOKEN_FACTORY,
     POST_AUCTION_LIQUIDITY_MANAGER,
+    AGENT_NAMES,
 } as const;
 
 // Admin wallet for demo - only this address can register agents

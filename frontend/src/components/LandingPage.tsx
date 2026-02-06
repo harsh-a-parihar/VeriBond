@@ -114,7 +114,7 @@ export default function LandingPage() {
                                     <button onClick={openAccountModal} className="px-4 py-2 rounded border border-zinc-800 bg-zinc-900/80 text-zinc-300 text-xs font-mono hover:bg-zinc-800 transition-colors">
                                         {account.displayName}
                                     </button>
-                                    <Link href="/dashboard">
+                                    <Link href="/marketplace">
                                         <button className="group px-5 py-2 rounded bg-white text-black text-xs font-bold hover:bg-zinc-200 transition-colors flex items-center gap-2">
                                             LAUNCH APP
                                             <ArrowRight size={12} className="group-hover:translate-x-0.5 transition-transform" />
@@ -161,7 +161,7 @@ export default function LandingPage() {
                             </p>
 
                             <div className="flex flex-col sm:flex-row gap-5">
-                                <Link href="/dashboard">
+                                <Link href="/marketplace">
                                     <button className="h-12 px-8 rounded bg-white text-black font-bold text-sm tracking-wide hover:scale-105 transition-transform flex items-center gap-2 shadow-[0_0_20px_rgba(255,255,255,0.2)]">
                                         START VERIFYING
                                     </button>
@@ -328,7 +328,7 @@ export default function LandingPage() {
                         Join the first marketplace where AI agents are citizens, not just tools.
                     </p>
                     {isConnected ? (
-                        <Link href="/dashboard">
+                        <Link href="/marketplace">
                             <button className="h-14 px-10 rounded-full bg-white text-black font-bold text-sm tracking-wide hover:scale-105 transition-transform shadow-[0_0_40px_rgba(255,255,255,0.3)]">
                                 OPEN TERMINAL
                             </button>

@@ -38,8 +38,9 @@ interface Agent {
 }
 
 // Data Fetcher
-const fetchAgents = async (): Promise<Agent[]> => {
-    const res = await fetch('/api/agents');
+const fetchAgents = async (query: string = ''): Promise<Agent[]> => {
+    const url = query ? `/api/agents?q=${encodeURIComponent(query)}` : '/api/agents';
+    const res = await fetch(url);
     const data = await res.json();
     if (data.status === 'init_needed') return [];
 
@@ -48,11 +49,13 @@ const fetchAgents = async (): Promise<Agent[]> => {
         id: row.id,
         name: row.name,
         ticker: row.ticker || 'UNK',
-        ens: row.owner ? (row.owner.slice(0, 6) + '...' + row.owner.slice(-4)) : 'Unknown',
+        ens: row.claimed_name
+            ? `${row.claimed_name}.veribond`
+            : (row.owner ? (row.owner.slice(0, 6) + '...' + row.owner.slice(-4)) : 'Unknown'),
         status: !row.is_active ? 'slashed' : (row.auction_status === 'active' ? 'auction' : 'active'),
         price: Number(row.total_cleared || 0), // Use total cleared as price/mcap proxy
         change: 0,
-        accuracy: 100,
+        accuracy: Number(row.trust_score || 100),
         staked: '0 USDC',
         image: row.image,
         description: row.description,
@@ -201,13 +204,23 @@ const AgentCard = ({ agent }: { agent: Agent }) => {
 
 export default function VeriBondMarketplaceFinal() {
     const [view, setView] = useState<'live' | 'auctions'>('live');
+    const [searchInput, setSearchInput] = useState('');
+    const [debouncedQuery, setDebouncedQuery] = useState('');
     const { address, isConnected } = useAccount();
     const { count: claimCount } = useClaimCount();
 
+    // Debounce search input
+    React.useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedQuery(searchInput);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [searchInput]);
+
     // Query
     const { data: agents = [], isLoading, refetch } = useQuery({
-        queryKey: ['agents'],
-        queryFn: fetchAgents
+        queryKey: ['agents', debouncedQuery],
+        queryFn: () => fetchAgents(debouncedQuery)
     });
 
     // Mutation for Sync
@@ -323,7 +336,13 @@ export default function VeriBondMarketplaceFinal() {
                 <header className="h-16 border-b border-white/5 flex items-center justify-between px-6 sticky top-0 bg-[#050505]/90 backdrop-blur z-10">
                     <div className="flex items-center gap-2 text-zinc-400 text-sm">
                         <Search size={14} />
-                        <input type="text" placeholder="Search agents..." className="bg-transparent outline-none placeholder-zinc-700 text-zinc-200 w-64" />
+                        <input
+                            type="text"
+                            placeholder="Search by name, ID, address, or ENS..."
+                            value={searchInput}
+                            onChange={(e) => setSearchInput(e.target.value)}
+                            className="bg-transparent outline-none placeholder-zinc-700 text-zinc-200 w-80"
+                        />
                     </div>
                     <div className="flex gap-4 text-xs font-mono text-zinc-500">
                         <button onClick={() => sync()} disabled={isSyncing} className="flex items-center gap-2 hover:text-zinc-300 transition-colors">
