@@ -2,14 +2,15 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
-import { AGENT_TOKEN_FACTORY, USDC } from '@/lib/contracts';
-import { AGENT_TOKEN_FACTORY_ABI, CCA_ABI } from '@/lib/abis';
+import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, usePublicClient, useBlockNumber } from 'wagmi';
+import { ADMIN_WALLET, AGENT_TOKEN_FACTORY, USDC } from '@/lib/contracts';
+import { AGENT_TOKEN_FACTORY_ABI, CCA_ABI, POST_AUCTION_LIQUIDITY_MANAGER_ABI } from '@/lib/abis';
 import { formatUnits, parseUnits, maxUint160, maxUint48, parseAbiItem } from 'viem';
 import { Loader2, TrendingUp, Wallet, Clock, CheckCircle, ArrowLeft, Activity, Gavel } from 'lucide-react';
 
 // Permit2 canonical address (same on all EVM chains)
 const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3' as const;
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
 
 const ERC20_ABI = [
     {
@@ -79,6 +80,12 @@ export default function AuctionPage() {
         args: agentId ? [agentId] : undefined,
     });
 
+    const { data: liquidityManagerAddress } = useReadContract({
+        address: AGENT_TOKEN_FACTORY,
+        abi: AGENT_TOKEN_FACTORY_ABI,
+        functionName: 'liquidityManager',
+    });
+
     // 2. Read Auction State
     const { data: clearingPrice, refetch: refetchPrice } = useReadContract({
         address: auctionAddress,
@@ -94,6 +101,16 @@ export default function AuctionPage() {
         functionName: 'totalCleared',
         args: [],
         query: { enabled: !!auctionAddress }
+    });
+
+    const hasLiquidityManager = !!liquidityManagerAddress && liquidityManagerAddress !== ZERO_ADDRESS;
+
+    const { data: managerAuctionRecord, refetch: refetchManagerAuction } = useReadContract({
+        address: hasLiquidityManager ? liquidityManagerAddress : undefined,
+        abi: POST_AUCTION_LIQUIDITY_MANAGER_ABI,
+        functionName: 'auctions',
+        args: auctionAddress ? [auctionAddress] : undefined,
+        query: { enabled: !!auctionAddress && hasLiquidityManager }
     });
 
     // Read auction timing
@@ -119,7 +136,7 @@ export default function AuctionPage() {
             console.log('[Auction] Timing:', {
                 startBlock: startBlock.toString(),
                 endBlock: endBlock.toString(),
-                clearingPrice: clearingPrice?.toString()
+                clearingPrice: clearingPrice ? formatUnits(clearingPrice, 18) : undefined
             });
         }
     }, [startBlock, endBlock, clearingPrice]);
@@ -130,7 +147,10 @@ export default function AuctionPage() {
     const [approvalStep, setApprovalStep] = useState<'erc20' | 'permit2' | 'ready'>('erc20');
     const [lastBidId, setLastBidId] = useState<bigint | null>(null);
     const [userBids, setUserBids] = useState<bigint[]>([]);
+    const [lpRecipient, setLpRecipient] = useState('');
+    const [lpTokenAmount, setLpTokenAmount] = useState('');
     const publicClient = usePublicClient();
+    const { data: currentBlock } = useBlockNumber({ watch: true });
 
     // Read claimBlock to check if claiming is available
     const { data: claimBlock } = useReadContract({
@@ -141,13 +161,48 @@ export default function AuctionPage() {
         query: { enabled: !!auctionAddress }
     });
 
+    const isAuctionEnded = currentBlock && claimBlock ? currentBlock > claimBlock : false;
+    const isAuctionActive = currentBlock && endBlock ? currentBlock < endBlock : false;
+    const isAdmin = address?.toLowerCase() === ADMIN_WALLET.toLowerCase();
+
+    const managerRecord = managerAuctionRecord as
+        | readonly [bigint, `0x${string}`, `0x${string}`, `0x${string}`, bigint, bigint, bigint, bigint, boolean, boolean, boolean]
+        | undefined;
+    const managerRegistered = managerRecord?.[8] ?? false;
+    const managerFinalized = managerRecord?.[9] ?? false;
+    const managerReleased = managerRecord?.[10] ?? false;
+    const managerCurrencyRaised = managerRecord?.[5] ?? 0n;
+    const managerLpCurrencyBudget = managerRecord?.[6] ?? 0n;
+    const managerLpTokenBudget = managerRecord?.[7] ?? 0n;
+
+    // Calculate estimated time remaining
+    const blocksRemaining = currentBlock && endBlock ? (endBlock > currentBlock ? endBlock - currentBlock : BigInt(0)) : BigInt(0);
+    const secondsRemaining = Number(blocksRemaining) * 2; // ~2s per block on Base
+    const hours = Math.floor(secondsRemaining / 3600);
+    const minutes = Math.floor((secondsRemaining % 3600) / 60);
+
+    const timeLeftString = blocksRemaining > 0
+        ? `${hours}h ${minutes}m left`
+        : (isAuctionActive ? 'Ending soon...' : 'Ended');
+
     // Fetch user's bids
     useEffect(() => {
         const fetchBids = async () => {
-            if (!publicClient || !auctionAddress || !address || !startBlock) return;
+            console.log('[BidDiscovery] Starting fetch...', {
+                hasPublicClient: !!publicClient,
+                auctionAddress,
+                userAddress: address,
+                startBlock: startBlock?.toString()
+            });
+
+            if (!publicClient || !auctionAddress || !address || !startBlock) {
+                console.log('[BidDiscovery] Skipping - missing dependencies');
+                return;
+            }
 
             try {
                 // Get all bids submitted by user
+                console.log('[BidDiscovery] Fetching BidSubmitted events...');
                 const submittedLogs = await publicClient.getLogs({
                     address: auctionAddress,
                     event: parseAbiItem('event BidSubmitted(uint256 indexed bidId, address indexed owner, uint256 maxPrice, uint128 amount)'),
@@ -155,8 +210,10 @@ export default function AuctionPage() {
                     fromBlock: BigInt(startBlock),
                     toBlock: 'latest'
                 });
+                console.log('[BidDiscovery] BidSubmitted logs:', submittedLogs.length, submittedLogs);
 
                 // Get all bids exited (claimed) by user
+                console.log('[BidDiscovery] Fetching BidExited events...');
                 const exitedLogs = await publicClient.getLogs({
                     address: auctionAddress,
                     event: parseAbiItem('event BidExited(uint256 indexed bidId, address indexed owner, uint256 tokensFilled, uint256 currencyRefunded)'),
@@ -164,6 +221,7 @@ export default function AuctionPage() {
                     fromBlock: BigInt(startBlock),
                     toBlock: 'latest'
                 });
+                console.log('[BidDiscovery] BidExited logs:', exitedLogs.length, exitedLogs);
 
                 const exitedBidIds = new Set(exitedLogs.map(log => log.args.bidId!.toString()));
 
@@ -173,14 +231,16 @@ export default function AuctionPage() {
                     .filter(id => !exitedBidIds.has(id.toString()))
                     .sort((a, b) => Number(b - a)); // Newest first
 
+                console.log('[BidDiscovery] Active bids after filtering:', activeBidIds.map(b => b.toString()));
                 setUserBids(activeBidIds);
 
                 // Auto-select newest bid if no selection and no pending claim
                 if (activeBidIds.length > 0 && !lastBidId) {
+                    console.log('[BidDiscovery] Auto-selecting bid:', activeBidIds[0].toString());
                     setLastBidId(activeBidIds[0]);
                 }
             } catch (err) {
-                console.error("Error fetching bids", err);
+                console.error("[BidDiscovery] Error fetching bids", err);
             }
         };
 
@@ -192,11 +252,15 @@ export default function AuctionPage() {
     // 4. Contract Writes
     const { writeContractAsync, isPending: isWritePending } = useWriteContract();
     const { writeContract: writeBid, data: bidHash, isPending: isBidPending, error: bidError } = useWriteContract();
-    const { writeContract: writeClaim, data: claimHash, isPending: isClaimPending } = useWriteContract();
+    const { writeContract: writeClaim, data: claimHash, isPending: isClaimPending, error: claimError } = useWriteContract();
+    const { writeContract: writeFinalize, data: finalizeHash, isPending: isFinalizePending, error: finalizeError } = useWriteContract();
+    const { writeContract: writeRelease, data: releaseHash, isPending: isReleasePending, error: releaseError } = useWriteContract();
 
     // 5. Transaction Receipts
     const { isSuccess: isBidSuccess, isLoading: isBidConfirming } = useWaitForTransactionReceipt({ hash: bidHash });
     const { isSuccess: isClaimSuccess, isLoading: isClaimConfirming } = useWaitForTransactionReceipt({ hash: claimHash });
+    const { isSuccess: isFinalizeSuccess, isLoading: isFinalizeConfirming } = useWaitForTransactionReceipt({ hash: finalizeHash });
+    const { isSuccess: isReleaseSuccess, isLoading: isReleaseConfirming } = useWaitForTransactionReceipt({ hash: releaseHash });
 
     useEffect(() => {
         if (isBidSuccess) {
@@ -205,21 +269,160 @@ export default function AuctionPage() {
             refetchCleared();
             // Note: In production, we'd parse the BidSubmitted event to get bidId
         }
-    }, [isBidSuccess]);
+    }, [isBidSuccess, refetchPrice, refetchCleared]);
 
-    // Handle claim tokens
-    const handleClaim = async () => {
-        if (!auctionAddress || !address || !lastBidId) {
-            console.error('[Claim] Missing auctionAddress, address, or bidId');
+    useEffect(() => {
+        if (isFinalizeSuccess) {
+            refetchManagerAuction();
+        }
+    }, [isFinalizeSuccess, refetchManagerAuction]);
+
+    useEffect(() => {
+        if (isReleaseSuccess) {
+            refetchManagerAuction();
+        }
+    }, [isReleaseSuccess, refetchManagerAuction]);
+
+    // Monitor claim transaction
+    useEffect(() => {
+        console.log('[Claim TX Monitor]', {
+            claimHash: claimHash?.toString(),
+            isClaimPending,
+            isClaimConfirming,
+            isClaimSuccess,
+            claimError: claimError?.message
+        });
+
+        if (claimError) {
+            console.error('[Claim TX] ERROR:', claimError);
+            alert(`Claim failed: ${claimError.message || 'Unknown error'}`);
+        }
+
+        if (isClaimSuccess) {
+            console.log('[Claim TX] SUCCESS! Transaction confirmed:', claimHash);
+            alert('Tokens claimed successfully! 🎉');
+        }
+    }, [claimHash, isClaimPending, isClaimConfirming, isClaimSuccess, claimError]);
+
+    // 6. Exit and Claim Flow
+    const { writeContract: writeExit, data: exitHash, isPending: isExitPending } = useWriteContract();
+    const { isSuccess: isExitSuccess, isLoading: isExitConfirming } = useWaitForTransactionReceipt({ hash: exitHash });
+
+    // Monitor exit transaction
+    useEffect(() => {
+        if (isExitSuccess) {
+            console.log('[Exit] SUCCESS! Bid exited, you can now claim.');
+            alert('Bid exited successfully! You can now claim your tokens. 🎉');
+        }
+    }, [isExitSuccess]);
+
+    // Handle exit bid (MUST be called before claiming)
+    const handleExitBid = async () => {
+        console.log('[Exit] Button clicked. State:', {
+            auctionAddress,
+            userAddress: address,
+            lastBidId: lastBidId?.toString(),
+        });
+
+        if (!auctionAddress || !address || lastBidId === null) {
+            console.error('[Exit] Missing required data');
+            alert('Cannot exit: Missing auction address, wallet, or bid ID.');
             return;
         }
 
-        console.log('[Claim] Claiming tokens for bidId:', lastBidId.toString());
-        writeClaim({
-            address: auctionAddress,
-            abi: CCA_ABI,
-            functionName: 'claimTokens',
-            args: [lastBidId],
+        try {
+            console.log('[Exit] Calling exitBid for bidId:', lastBidId.toString());
+            writeExit({
+                address: auctionAddress,
+                abi: CCA_ABI,
+                functionName: 'exitBid',
+                args: [lastBidId],
+            });
+            console.log('[Exit] writeExit called successfully');
+        } catch (err) {
+            console.error('[Exit] Error calling writeExit:', err);
+            alert('Exit failed. Check console for error details.');
+        }
+    };
+
+    // Handle claim tokens (AFTER exitBid)
+    const handleClaim = async () => {
+        console.log('[Claim] Button clicked. State:', {
+            auctionAddress,
+            userAddress: address,
+            lastBidId: lastBidId?.toString(),
+            userBids: userBids.map(b => b.toString()),
+            isClaimPending,
+            isClaimConfirming
+        });
+
+        if (!auctionAddress || !address || lastBidId === null) {
+            console.error('[Claim] Missing required data:', { auctionAddress, address, lastBidId: lastBidId?.toString() });
+            alert('Cannot claim: Missing auction address, wallet, or bid ID. Check console for details.');
+            return;
+        }
+
+        try {
+            console.log('[Claim] Calling claimTokens for bidId:', lastBidId.toString());
+            writeClaim({
+                address: auctionAddress,
+                abi: CCA_ABI,
+                functionName: 'claimTokens',
+                args: [lastBidId],
+            });
+            console.log('[Claim] writeClaim called successfully');
+        } catch (err) {
+            console.error('[Claim] Error calling writeClaim:', err);
+            alert('Claim failed. Check console for error details.');
+        }
+    };
+
+    const handleFinalizeAuction = () => {
+        if (!hasLiquidityManager || !liquidityManagerAddress || !auctionAddress) {
+            alert('Liquidity manager or auction address missing.');
+            return;
+        }
+
+        writeFinalize({
+            address: liquidityManagerAddress,
+            abi: POST_AUCTION_LIQUIDITY_MANAGER_ABI,
+            functionName: 'finalizeAuction',
+            args: [auctionAddress],
+        });
+    };
+
+    const handleReleaseLiquidity = () => {
+        if (!hasLiquidityManager || !liquidityManagerAddress || !auctionAddress) {
+            alert('Liquidity manager or auction address missing.');
+            return;
+        }
+
+        const recipientCandidate = (lpRecipient || address || '').trim();
+        if (!recipientCandidate || !recipientCandidate.startsWith('0x') || recipientCandidate.length !== 42) {
+            alert('Enter a valid recipient address.');
+            return;
+        }
+
+        let tokenAmountToRelease: bigint;
+        try {
+            tokenAmountToRelease = lpTokenAmount.trim()
+                ? parseUnits(lpTokenAmount.trim(), 18)
+                : managerLpTokenBudget;
+        } catch {
+            alert('Invalid token amount.');
+            return;
+        }
+
+        if (tokenAmountToRelease <= 0n) {
+            alert('Token amount must be greater than 0.');
+            return;
+        }
+
+        writeRelease({
+            address: liquidityManagerAddress,
+            abi: POST_AUCTION_LIQUIDITY_MANAGER_ABI,
+            functionName: 'releaseLiquidityAssets',
+            args: [auctionAddress, recipientCandidate as `0x${string}`, tokenAmountToRelease],
         });
     };
 
@@ -334,15 +537,6 @@ export default function AuctionPage() {
         );
     }
 
-    // Check if auction has ended
-    // const isAuctionEnded = endBlock && BigInt(endBlock) < BigInt(Date.now() / 2000 + 37280000); // Rough check
-    // Actually check by comparing with current block from the lastBid or approx
-    const auctionStatus = endBlock ? (
-        startBlock && endBlock ?
-            `Blocks ${startBlock.toString()} - ${endBlock.toString()} (Duration: ${Number(endBlock - startBlock)} blocks ≈ ${Math.round(Number(endBlock - startBlock) * 2 / 3600)}h)` :
-            'Loading...'
-    ) : 'Loading...';
-
     return (
         <div className="min-h-screen bg-[#050505] text-zinc-200 font-sans selection:bg-teal-900/30 p-6 md:p-12">
             <div className="max-w-5xl mx-auto space-y-8">
@@ -354,7 +548,10 @@ export default function AuctionPage() {
                             <ArrowLeft size={12} /> Back
                         </button>
                         <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-3">
-                            CCA Auction <span className="px-2 py-0.5 rounded bg-blue-900/20 border border-blue-900/50 text-blue-500 text-[10px] uppercase font-mono tracking-wider">Live</span>
+                            CCA Auction
+                            <span className={`px-2 py-0.5 rounded border text-[10px] uppercase font-mono tracking-wider ${isAuctionActive ? 'bg-blue-900/20 border-blue-900/50 text-blue-500' : 'bg-red-900/20 border-red-900/50 text-red-500'}`}>
+                                {isAuctionActive ? 'Live' : 'Ended'}
+                            </span>
                         </h1>
                         <p className="text-sm font-mono text-zinc-500 mt-1">
                             Contract: {auctionAddress}
@@ -363,7 +560,7 @@ export default function AuctionPage() {
                     <div className="text-right">
                         <p className="text-xs text-zinc-500 uppercase tracking-wider font-bold">Clearing Price</p>
                         <p className="text-3xl font-bold font-mono text-white mt-1">
-                            {clearingPrice ? formatUnits(clearingPrice, 6) : '---'} <span className="text-lg text-zinc-600">USDC</span>
+                            {clearingPrice ? formatUnits(clearingPrice, 18) : '---'} <span className="text-lg text-zinc-600">USDC</span>
                         </p>
                     </div>
                 </div>
@@ -477,71 +674,202 @@ export default function AuctionPage() {
                             </p>
                         </div>
 
-                        {/* Claim Tokens Card */}
-                        <div className="border border-white/5 bg-[#0a0a0a] rounded-lg overflow-hidden">
-                            <div className="p-4 border-b border-white/5 bg-zinc-900/20">
-                                <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">Claim Tokens</h2>
+                        {/* Claim Tokens Card (Only show when auction ended) */}
+                        {!isAuctionActive && isAuctionEnded && (
+                            <div className="border border-white/5 bg-[#0a0a0a] rounded-lg overflow-hidden animate-in fade-in duration-500">
+                                <div className="p-4 border-b border-white/5 bg-zinc-900/20">
+                                    <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">Claim Tokens</h2>
+                                </div>
+                                <div className="p-4 space-y-4">
+                                    <div className="flex justify-between items-center py-2 border-b border-white/5">
+                                        <span className="text-xs text-zinc-500">Claim Block</span>
+                                        <span className="font-mono text-zinc-200">{claimBlock?.toString() || 'Loading...'}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center py-2 border-b border-white/5">
+                                        <span className="text-xs text-zinc-500">End Block</span>
+                                        <span className="font-mono text-zinc-200">{endBlock?.toString() || 'Loading...'}</span>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[10px] text-zinc-500 mb-2 uppercase tracking-wider">Select Bid to Claim</label>
+
+                                        {userBids.length > 0 ? (
+                                            <div className="relative">
+                                                <select
+                                                    className="w-full bg-zinc-900 border border-white/10 rounded p-3 text-sm font-mono focus:outline-none focus:border-teal-500/50 appearance-none text-zinc-300"
+                                                    value={lastBidId?.toString() || ''}
+                                                    onChange={e => setLastBidId(BigInt(e.target.value))}
+                                                >
+                                                    {userBids.map(bidId => (
+                                                        <option key={bidId.toString()} value={bidId.toString()}>
+                                                            Bid #{bidId.toString()}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                <div className="absolute right-3 top-3.5 pointer-events-none">
+                                                    <svg className="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="p-3 bg-zinc-900/50 border border-white/5 rounded text-xs text-zinc-500 italic text-center">
+                                                No claimable bids found.
+                                            </div>
+                                        )}
+
+                                        <p className="text-[10px] text-zinc-600 mt-2 flex items-center justify-between">
+                                            <span>Check BidSubmitted event</span>
+                                            {userBids.length > 0 && <span className="text-teal-500/80">{userBids.length} active bid(s)</span>}
+                                        </p>
+                                    </div>
+
+                                    {/* Instructions */}
+                                    <div className="p-3 bg-blue-950/10 border border-blue-900/20 rounded text-[10px] text-blue-300 leading-relaxed">
+                                        <strong className="block mb-1">📋 Two-Step Process:</strong>
+                                        <ol className="list-decimal list-inside space-y-1 text-zinc-400">
+                                            <li>Click <strong className="text-blue-400">&quot;Exit Bid&quot;</strong> to finalize settlement</li>
+                                            <li>After confirmation, click <strong className="text-teal-400">&quot;Claim Tokens&quot;</strong></li>
+                                        </ol>
+                                    </div>
+
+                                    {isClaimSuccess && (
+                                        <div className="p-3 border border-green-900/50 bg-green-950/10 rounded flex items-center gap-2">
+                                            <CheckCircle className="text-green-500 h-4 w-4 shrink-0" />
+                                            <p className="text-xs text-green-400 font-bold">Tokens Claimed Successfully</p>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="p-4 border-t border-white/5 bg-zinc-900/10 space-y-2">
+                                    <button
+                                        onClick={handleExitBid}
+                                        disabled={lastBidId === null || isExitPending || isExitConfirming || isExitSuccess}
+                                        className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {isExitPending || isExitConfirming ? <Loader2 className="animate-spin h-3 w-3" /> : <CheckCircle className="h-3 w-3" />}
+                                        {isExitSuccess ? '✅ Bid Exited' : 'Step 1: Exit Bid'}
+                                    </button>
+                                    <button
+                                        onClick={handleClaim}
+                                        disabled={!isExitSuccess || lastBidId === null || isClaimPending || isClaimConfirming}
+                                        className="w-full py-3 bg-teal-600 hover:bg-teal-500 text-white font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {isClaimPending || isClaimConfirming ? <Loader2 className="animate-spin h-3 w-3" /> : <CheckCircle className="h-3 w-3" />}
+                                        Step 2: Claim Tokens
+                                    </button>
+                                </div>
                             </div>
-                            <div className="p-4 space-y-4">
-                                <div className="flex justify-between items-center py-2 border-b border-white/5">
-                                    <span className="text-xs text-zinc-500">Claim Block</span>
-                                    <span className="font-mono text-zinc-200">{claimBlock?.toString() || 'Loading...'}</span>
-                                </div>
-                                <div className="flex justify-between items-center py-2 border-b border-white/5">
-                                    <span className="text-xs text-zinc-500">End Block</span>
-                                    <span className="font-mono text-zinc-200">{endBlock?.toString() || 'Loading...'}</span>
-                                </div>
+                        )}
 
-                                <div>
-                                    <label className="block text-[10px] text-zinc-500 mb-2 uppercase tracking-wider">Select Bid to Claim</label>
-
-                                    {userBids.length > 0 ? (
-                                        <div className="relative">
-                                            <select
-                                                className="w-full bg-zinc-900 border border-white/10 rounded p-3 text-sm font-mono focus:outline-none focus:border-teal-500/50 appearance-none text-zinc-300"
-                                                value={lastBidId?.toString() || ''}
-                                                onChange={e => setLastBidId(BigInt(e.target.value))}
-                                            >
-                                                {userBids.map(bidId => (
-                                                    <option key={bidId.toString()} value={bidId.toString()}>
-                                                        Bid #{bidId.toString()}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            <div className="absolute right-3 top-3.5 pointer-events-none">
-                                                <svg className="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                        {/* Admin-only Post-Auction Settlement */}
+                        {isAdmin && (
+                            <div className="border border-yellow-900/20 bg-yellow-950/5 rounded-lg overflow-hidden">
+                                <div className="p-4 border-b border-yellow-900/20 bg-zinc-900/20">
+                                    <h2 className="text-xs font-bold uppercase tracking-widest text-yellow-400">Admin: Post-Auction Settlement</h2>
+                                </div>
+                                <div className="p-4 space-y-3">
+                                    <div className="text-[10px] text-zinc-500 font-mono break-all">
+                                        Manager: {hasLiquidityManager ? liquidityManagerAddress : 'Not configured'}
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                        <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
+                                            <div className="text-zinc-500">Registered</div>
+                                            <div className={managerRegistered ? 'text-teal-400 font-bold' : 'text-zinc-400'}>
+                                                {managerRegistered ? 'YES' : 'NO'}
                                             </div>
                                         </div>
-                                    ) : (
-                                        <div className="p-3 bg-zinc-900/50 border border-white/5 rounded text-xs text-zinc-500 italic text-center">
-                                            No claimable bids found.
+                                        <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
+                                            <div className="text-zinc-500">Finalized</div>
+                                            <div className={managerFinalized ? 'text-teal-400 font-bold' : 'text-zinc-400'}>
+                                                {managerFinalized ? 'YES' : 'NO'}
+                                            </div>
+                                        </div>
+                                        <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
+                                            <div className="text-zinc-500">Released</div>
+                                            <div className={managerReleased ? 'text-teal-400 font-bold' : 'text-zinc-400'}>
+                                                {managerReleased ? 'YES' : 'NO'}
+                                            </div>
+                                        </div>
+                                        <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
+                                            <div className="text-zinc-500">Raised (USDC)</div>
+                                            <div className="text-zinc-200 font-mono">{formatUnits(managerCurrencyRaised, 6)}</div>
+                                        </div>
+                                        <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
+                                            <div className="text-zinc-500">LP USDC Budget</div>
+                                            <div className="text-zinc-200 font-mono">{formatUnits(managerLpCurrencyBudget, 6)}</div>
+                                        </div>
+                                        <div className="p-2 border border-white/5 rounded bg-zinc-900/40">
+                                            <div className="text-zinc-500">LP Token Budget</div>
+                                            <div className="text-zinc-200 font-mono">{formatUnits(managerLpTokenBudget, 18)}</div>
+                                        </div>
+                                    </div>
+
+                                    {(finalizeError || releaseError) && (
+                                        <div className="text-xs text-red-400 border border-red-900/40 bg-red-950/10 rounded p-2">
+                                            {(finalizeError?.message || releaseError?.message || '').split('\n')[0]}
                                         </div>
                                     )}
 
-                                    <p className="text-[10px] text-zinc-600 mt-2 flex items-center justify-between">
-                                        <span>Check BidSubmitted event</span>
-                                        {userBids.length > 0 && <span className="text-teal-500/80">{userBids.length} active bid(s)</span>}
+                                    {(isFinalizeSuccess || isReleaseSuccess) && (
+                                        <div className="text-xs text-green-400 border border-green-900/40 bg-green-950/10 rounded p-2">
+                                            {isReleaseSuccess ? 'LP assets released successfully.' : 'Auction finalized successfully.'}
+                                        </div>
+                                    )}
+
+                                    <button
+                                        onClick={handleFinalizeAuction}
+                                        disabled={!hasLiquidityManager || !isAuctionEnded || managerFinalized || isFinalizePending || isFinalizeConfirming}
+                                        className="w-full py-2.5 bg-yellow-600 hover:bg-yellow-500 text-black font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {isFinalizePending || isFinalizeConfirming ? <Loader2 className="animate-spin h-3 w-3" /> : null}
+                                        {managerFinalized ? 'Auction Finalized' : 'Finalize Auction'}
+                                    </button>
+
+                                    <div className="space-y-2">
+                                        <input
+                                            type="text"
+                                            value={lpRecipient}
+                                            onChange={(e) => setLpRecipient(e.target.value)}
+                                            placeholder={address || 'LP recipient address'}
+                                            className="w-full bg-[#050505] border border-zinc-800 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-yellow-900/50"
+                                        />
+                                        <input
+                                            type="number"
+                                            value={lpTokenAmount}
+                                            onChange={(e) => setLpTokenAmount(e.target.value)}
+                                            placeholder={`Token amount (default full: ${formatUnits(managerLpTokenBudget, 18)})`}
+                                            className="w-full bg-[#050505] border border-zinc-800 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-yellow-900/50"
+                                        />
+                                        <button
+                                            onClick={handleReleaseLiquidity}
+                                            disabled={!hasLiquidityManager || !managerFinalized || managerReleased || isReleasePending || isReleaseConfirming}
+                                            className="w-full py-2.5 bg-zinc-200 hover:bg-white text-black font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {isReleasePending || isReleaseConfirming ? <Loader2 className="animate-spin h-3 w-3" /> : null}
+                                            {managerReleased ? 'Liquidity Released' : 'Release LP Assets'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Timer Card (Only show when active) */}
+                        {isAuctionActive && (
+                            <div className="border border-white/5 bg-[#0a0a0a] rounded-lg overflow-hidden">
+                                <div className="p-4 border-b border-white/5 bg-zinc-900/20">
+                                    <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">Time Remaining</h2>
+                                </div>
+                                <div className="p-6 flex flex-col items-center justify-center text-center">
+                                    <div className="text-3xl font-mono text-zinc-200 font-bold mb-2">
+                                        {timeLeftString}
+                                    </div>
+                                    <p className="text-xs text-zinc-500">
+                                        Ends at block {endBlock?.toString()}
+                                    </p>
+                                    <p className="text-[10px] text-zinc-600 mt-4 max-w-[200px]">
+                                        Tokens will be claimable after the auction ends.
                                     </p>
                                 </div>
-
-                                {isClaimSuccess && (
-                                    <div className="p-3 border border-green-900/50 bg-green-950/10 rounded flex items-center gap-2">
-                                        <CheckCircle className="text-green-500 h-4 w-4 shrink-0" />
-                                        <p className="text-xs text-green-400 font-bold">Tokens Claimed Successfully</p>
-                                    </div>
-                                )}
                             </div>
-                            <div className="p-4 border-t border-white/5 bg-zinc-900/10">
-                                <button
-                                    onClick={handleClaim}
-                                    disabled={!lastBidId || isClaimPending || isClaimConfirming}
-                                    className="w-full py-3 bg-teal-600 hover:bg-teal-500 text-white font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-                                >
-                                    {isClaimPending || isClaimConfirming ? <Loader2 className="animate-spin h-3 w-3" /> : <CheckCircle className="h-3 w-3" />}
-                                    Claim Tokens
-                                </button>
-                            </div>
-                        </div>
+                        )}
                     </div>
                 </div>
             </div>

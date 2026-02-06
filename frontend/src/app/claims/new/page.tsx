@@ -2,9 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts } from 'wagmi';
 import { parseUnits, keccak256, toBytes } from 'viem';
 import { useUSDCBalance, useUSDCAllowance, useMinStake } from '@/hooks';
 import { CONTRACTS } from '@/lib/contracts';
@@ -15,13 +14,47 @@ import {
 
 // Default agent ID - should be dynamic based on user's agent
 const AGENT_ID = 142;
+const formatUSDC = (amount: bigint) => (Number(amount) / 1e6).toFixed(2);
 
 export default function SubmitClaimPage() {
-    const router = useRouter();
-    const { address, isConnected } = useAccount();
+    const { isConnected } = useAccount();
     const { balance: usdcBalance, balanceFormatted, refetch: refetchBalance } = useUSDCBalance();
     const { allowance, refetch: refetchAllowance } = useUSDCAllowance(CONTRACTS.TRUTH_STAKE);
     const { minStake } = useMinStake();
+    const { data: economicsData } = useReadContracts({
+        contracts: [
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'slashPercent',
+            },
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'rewardBonusBps',
+            },
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'maxBonusPerClaim',
+            },
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'rewardSlashBps',
+            },
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'protocolSlashBps',
+            },
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'marketSlashBps',
+            },
+        ],
+    });
 
     // Form state
     const [claimDescription, setClaimDescription] = useState('');
@@ -61,6 +94,12 @@ export default function SubmitClaimPage() {
     const needsApproval = allowance !== undefined && stakeInUsdc > allowance;
     const hasEnoughBalance = usdcBalance !== undefined && stakeInUsdc <= usdcBalance;
     const minStakeFormatted = minStake ? (Number(minStake) / 1e6).toString() : '1';
+    const slashPercent = Number((economicsData?.[0]?.result as bigint | undefined) ?? 50n);
+    const rewardBonusBps = Number((economicsData?.[1]?.result as bigint | undefined) ?? 500n);
+    const maxBonusPerClaim = (economicsData?.[2]?.result as bigint | undefined) ?? 50_000_000n;
+    const rewardSlashBps = Number((economicsData?.[3]?.result as bigint | undefined) ?? 5000n);
+    const protocolSlashBps = Number((economicsData?.[4]?.result as bigint | undefined) ?? 5000n);
+    const marketSlashBps = Number((economicsData?.[5]?.result as bigint | undefined) ?? 0n);
 
     // Generate claim hash from description
     const claimHash = claimDescription
@@ -156,6 +195,16 @@ export default function SubmitClaimPage() {
                     </p>
                 </div>
 
+                <div className="mb-6 p-4 rounded-lg border border-blue-900/30 bg-blue-950/10 text-xs text-zinc-400 space-y-1">
+                    <p className="text-blue-300 font-semibold uppercase tracking-wider">Current Economics</p>
+                    <p>
+                        Correct claim: stake returned + up to {(rewardBonusBps / 100).toFixed(2)}% bonus from reward vault (cap {formatUSDC(maxBonusPerClaim)} USDC).
+                    </p>
+                    <p>
+                        Wrong claim: {slashPercent}% slash split as reward {(rewardSlashBps / 100).toFixed(2)}% / protocol {(protocolSlashBps / 100).toFixed(2)}% / market {(marketSlashBps / 100).toFixed(2)}%.
+                    </p>
+                </div>
+
                 {!isConnected ? (
                     <div className="p-8 rounded-xl border border-zinc-800 bg-zinc-900/30 text-center">
                         <Lock className="w-12 h-12 text-zinc-600 mx-auto mb-4" />
@@ -187,7 +236,14 @@ export default function SubmitClaimPage() {
                         </div>
                     </div>
                 ) : (
-                    <form onSubmit={(e) => { e.preventDefault(); needsApproval ? handleApprove() : handleSubmit(); }} className="space-y-6">
+                    <form onSubmit={(e) => {
+                        e.preventDefault();
+                        if (needsApproval) {
+                            handleApprove();
+                        } else {
+                            handleSubmit();
+                        }
+                    }} className="space-y-6">
                         {/* Claim Description */}
                         <div>
                             <label className="block text-xs uppercase tracking-wider text-zinc-500 mb-2 font-semibold">
@@ -321,7 +377,7 @@ export default function SubmitClaimPage() {
 
                         {needsApproval && step === 'form' && (
                             <p className="text-xs text-zinc-500 text-center">
-                                You'll need to approve USDC spending first (2 transactions total)
+                                You&apos;ll need to approve USDC spending first (2 transactions total)
                             </p>
                         )}
                     </form>

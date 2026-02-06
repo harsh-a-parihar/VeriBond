@@ -46,11 +46,60 @@ export const TRUTH_STAKE_ABI = [
         outputs: [{ type: 'uint256' }],
     },
     {
+        name: 'agentRewardVault',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'agentId', type: 'uint256' }],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
         name: 'minStake',
         type: 'function',
         stateMutability: 'view',
         inputs: [],
         outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'slashPercent',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'rewardBonusBps',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'maxBonusPerClaim',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'rewardSlashBps',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint16' }],
+    },
+    {
+        name: 'protocolSlashBps',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint16' }],
+    },
+    {
+        name: 'marketSlashBps',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint16' }],
     },
     {
         name: 'claimIds',
@@ -80,6 +129,16 @@ export const TRUTH_STAKE_ABI = [
         inputs: [{ name: 'claimId', type: 'bytes32' }],
         outputs: [],
     },
+    {
+        name: 'fundRewardVault',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [
+            { name: 'agentId', type: 'uint256' },
+            { name: 'amount', type: 'uint256' },
+        ],
+        outputs: [],
+    },
     // Events
     {
         name: 'ClaimSubmitted',
@@ -100,6 +159,7 @@ export const TRUTH_STAKE_ABI = [
             { name: 'agentId', type: 'uint256', indexed: true },
             { name: 'wasCorrect', type: 'bool', indexed: false },
             { name: 'slashAmount', type: 'uint256', indexed: false },
+            { name: 'bonusAmount', type: 'uint256', indexed: false },
         ],
     },
 ] as const;
@@ -272,6 +332,60 @@ export const AGENT_TOKEN_FACTORY_ABI = [
         inputs: [{ name: 'agentId', type: 'uint256' }],
         outputs: [{ type: 'address' }],
     },
+    {
+        name: 'liquidityManager',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'address' }],
+    },
+    {
+        name: 'lpReserveBps',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ type: 'uint16' }],
+    },
+] as const;
+
+export const POST_AUCTION_LIQUIDITY_MANAGER_ABI = [
+    {
+        name: 'finalizeAuction',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [{ name: 'auction', type: 'address' }],
+        outputs: [{ type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }],
+    },
+    {
+        name: 'releaseLiquidityAssets',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [
+            { name: 'auction', type: 'address' },
+            { name: 'recipient', type: 'address' },
+            { name: 'tokenAmount', type: 'uint256' },
+        ],
+        outputs: [],
+    },
+    {
+        name: 'auctions',
+        type: 'function',
+        stateMutability: 'view',
+        inputs: [{ name: 'auction', type: 'address' }],
+        outputs: [
+            { name: 'agentId', type: 'uint256' },
+            { name: 'agentOwner', type: 'address' },
+            { name: 'token', type: 'address' },
+            { name: 'currency', type: 'address' },
+            { name: 'lpReserveTokens', type: 'uint256' },
+            { name: 'currencyRaised', type: 'uint256' },
+            { name: 'lpCurrencyBudget', type: 'uint256' },
+            { name: 'lpTokenBudget', type: 'uint256' },
+            { name: 'registered', type: 'bool' },
+            { name: 'finalized', type: 'bool' },
+            { name: 'liquidityAssetsReleased', type: 'bool' },
+        ],
+    },
 ] as const;
 
 // Continuous Clearing Auction (CCA) ABI
@@ -330,6 +444,13 @@ export const CCA_ABI = [
             { name: '_hookData', type: 'bytes' },
         ],
         outputs: [{ type: 'uint256' }],
+    },
+    {
+        name: 'exitBid',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [{ name: '_bidId', type: 'uint256' }],
+        outputs: [],
     },
     {
         name: 'claimTokens',

@@ -41,3 +41,6 @@ lcov.info
 
 # Misc
 *.pem
+
+# Agent/Brain exported docs
+docs/*.md

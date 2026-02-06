@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts } from 'wagmi';
 import { formatDistanceToNow, isPast } from 'date-fns';
 import { useClaimDetails } from '@/hooks';
 import { CONTRACTS } from '@/lib/contracts';
@@ -26,6 +26,35 @@ export default function ClaimDetailPage() {
 
     const { isConnected } = useAccount();
     const { claim, isLoading, error } = useClaimDetails(claimId as `0x${string}`);
+    const { data: economicsData } = useReadContracts({
+        contracts: [
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'slashPercent',
+            },
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'rewardBonusBps',
+            },
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'rewardSlashBps',
+            },
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'protocolSlashBps',
+            },
+            {
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'marketSlashBps',
+            },
+        ],
+    });
 
     // Resolve transaction
     const {
@@ -60,6 +89,11 @@ export default function ClaimDetailPage() {
     const resolvesAtDate = claim ? new Date(Number(claim.resolvesAt) * 1000) : null;
     const canResolve = claim && !claim.resolved && resolvesAtDate && isPast(resolvesAtDate);
     const isResolved = claim?.resolved || localResolved;
+    const slashPercent = Number((economicsData?.[0]?.result as bigint | undefined) ?? 50n);
+    const rewardBonusBps = Number((economicsData?.[1]?.result as bigint | undefined) ?? 500n);
+    const rewardSlashBps = Number((economicsData?.[2]?.result as bigint | undefined) ?? 5000n);
+    const protocolSlashBps = Number((economicsData?.[3]?.result as bigint | undefined) ?? 5000n);
+    const marketSlashBps = Number((economicsData?.[4]?.result as bigint | undefined) ?? 0n);
 
     return (
         <div className="min-h-screen bg-[#09090b] text-zinc-200 font-sans">
@@ -261,8 +295,8 @@ export default function ClaimDetailPage() {
                                 </div>
                                 <p className={`text-sm ${claim.wasCorrect ? 'text-teal-500/70' : 'text-red-500/70'}`}>
                                     {claim.wasCorrect
-                                        ? 'The stake has been returned and reputation has been updated.'
-                                        : '50% of the stake has been slashed to the treasury.'
+                                        ? `Stake was returned. Bonus can be paid from the reward vault (up to ${(rewardBonusBps / 100).toFixed(2)}% of stake).`
+                                        : `${slashPercent}% of stake was slashed. Current split: reward ${(rewardSlashBps / 100).toFixed(2)}% / protocol ${(protocolSlashBps / 100).toFixed(2)}% / market ${(marketSlashBps / 100).toFixed(2)}%.`
                                     }
                                 </p>
                             </div>

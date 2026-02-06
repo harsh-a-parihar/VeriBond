@@ -183,11 +183,77 @@ contract TruthStakeTest is Test {
 
         // Agent gets 50% back (50 USDC)
         assertEq(usdc.balanceOf(agentWallet), agentBalanceBefore + 50 * 1e6);
-        // Treasury gets 50% (50 USDC)
-        assertEq(usdc.balanceOf(treasury), treasuryBalanceBefore + 50 * 1e6);
+        // Slash split defaults: 50% reward vault, 50% treasury.
+        // Slash amount = 50 USDC => reward vault +25, treasury +25.
+        assertEq(usdc.balanceOf(treasury), treasuryBalanceBefore + 25 * 1e6);
+        assertEq(truthStake.agentRewardVault(agentId), 25 * 1e6);
 
         (uint256 correct, uint256 total) = truthStake.getAgentAccuracy(agentId);
         assertEq(correct, 0);
         assertEq(total, 1);
+    }
+
+    function test_Resolve_CorrectWithBonusFromRewardVault() public {
+        // Use deterministic timestamps to avoid edge cases around relative warps.
+        uint256 t0 = 1_700_000_000;
+        vm.warp(t0);
+
+        // 1) First claim is wrong to fund reward vault.
+        uint256 firstResolvesAt = t0 + 1 days;
+        vm.startPrank(agentWallet);
+        usdc.approve(address(truthStake), 300 * 1e6);
+        bytes32 claimHash1 = keccak256("ETH > 3000");
+        bytes32 claimId1 = truthStake.submitClaim(agentId, claimHash1, 100 * 1e6, firstResolvesAt, true);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        resolver.setOutcome(claimHash1, false);
+        vm.warp(firstResolvesAt + 1);
+        truthStake.resolve(claimId1);
+
+        // Reward vault now has 25 USDC from slash split.
+        assertEq(truthStake.agentRewardVault(agentId), 25 * 1e6);
+
+        // 2) Second claim is correct and should pay stake + bonus.
+        uint256 secondSubmitTime = firstResolvesAt + 2;
+        vm.warp(secondSubmitTime);
+        uint256 secondResolvesAt = secondSubmitTime + 1 days;
+        vm.startPrank(agentWallet);
+        bytes32 claimHash2 = keccak256("BTC > 50000");
+        bytes32 claimId2 = truthStake.submitClaim(agentId, claimHash2, 100 * 1e6, secondResolvesAt, true);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        resolver.setOutcome(claimHash2, true);
+        vm.warp(secondResolvesAt + 1);
+
+        uint256 beforeBalance = usdc.balanceOf(agentWallet);
+        truthStake.resolve(claimId2);
+        uint256 afterBalance = usdc.balanceOf(agentWallet);
+
+        // Bonus config default: 5% of stake = 5 USDC, capped by vault and maxBonusPerClaim.
+        assertEq(afterBalance - beforeBalance, 105 * 1e6);
+        assertEq(truthStake.agentRewardVault(agentId), 20 * 1e6);
+    }
+
+    function test_FundRewardVault() public {
+        address funder = makeAddr("funder");
+        vm.prank(owner);
+        usdc.transfer(funder, 100 * 1e6);
+
+        vm.startPrank(funder);
+        usdc.approve(address(truthStake), 100 * 1e6);
+        truthStake.fundRewardVault(agentId, 40 * 1e6);
+        vm.stopPrank();
+
+        assertEq(truthStake.agentRewardVault(agentId), 40 * 1e6);
+    }
+
+    function test_SetSlashSplit() public {
+        vm.prank(owner);
+        truthStake.setSlashSplit(4000, 3000, 3000);
+        assertEq(truthStake.rewardSlashBps(), 4000);
+        assertEq(truthStake.protocolSlashBps(), 3000);
+        assertEq(truthStake.marketSlashBps(), 3000);
     }
 }

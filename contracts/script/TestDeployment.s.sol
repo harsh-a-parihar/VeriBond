@@ -13,9 +13,9 @@ import "../src/interfaces/IIdentityRegistry.sol";
  */
 contract TestDeployment is Script {
     // Deployed contract addresses
-    address constant OWNER_BADGE = 0x71e0519383D186db44921B508CCb597C9d351462;
-    address constant MOCK_RESOLVER = 0x27f5A684Cb372Da83bb5F5AfD27D2c08AA5Bb6b6;
-    address constant TRUTH_STAKE = 0x266Ec894b8C29088625dD9FA2423dd110B4Fb269;
+    address constant OWNER_BADGE = 0x8FAeFb6dc94DFf0215F263944722dcBd8E160bd7;
+    address constant MOCK_RESOLVER = 0x422dDE9a26B33e1782106b2239a8C029Cb514F93;
+    address constant TRUTH_STAKE = 0x2bB50E9092f368A5B7491Dd905445c4FF6602D0A;
     
     // ERC-8004 addresses
     address constant IDENTITY_REGISTRY = 0x8004A818BFB912233c491871b3d84c89A494BD9e;

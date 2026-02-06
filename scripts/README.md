@@ -59,9 +59,9 @@ npm run test-claim-flow
 
 | Contract | Address |
 |----------|---------|
-| OwnerBadge | `0x71e0519383D186db44921B508CCb597C9d351462` |
-| MockResolver | `0x27f5A684Cb372Da83bb5F5AfD27D2c08AA5Bb6b6` |
-| TruthStake | `0x266Ec894b8C29088625dD9FA2423dd110B4Fb269` |
+| OwnerBadge | `0x8faefb6dc94dff0215f263944722dcbd8e160bd7` |
+| MockResolver | `0x422dde9a26b33e1782106b2239a8c029cb514f93` |
+| TruthStake | `0x2bb50e9092f368a5b7491dd905445c4ff6602d0a` |
 
 ## ERC-8004 Registries
 

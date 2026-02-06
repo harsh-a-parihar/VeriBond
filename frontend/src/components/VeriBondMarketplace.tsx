@@ -101,7 +101,9 @@ const AgentCard = ({ agent }: { agent: Agent }) => {
     const isSlashed = agent.status === 'slashed';
 
     return (
-        <div className={`
+        <div
+            onClick={() => router.push(`/agents/${agent.id}`)}
+            className={`
       group relative flex flex-col border-b border-white/5 
       hover:bg-zinc-900/40 transition-all cursor-pointer
       ${isSlashed ? 'bg-red-950/5' : ''}
@@ -178,6 +180,12 @@ const AgentCard = ({ agent }: { agent: Agent }) => {
                     className="flex-1 py-1.5 text-[10px] font-medium uppercase tracking-wider border border-zinc-800 hover:bg-zinc-900 rounded text-zinc-400 transition-colors"
                 >
                     Launch Token
+                </button>
+                <button
+                    onClick={(e) => { e.stopPropagation(); router.push(`/agents/${agent.id}`); }}
+                    className="flex-1 py-1.5 text-[10px] font-medium uppercase tracking-wider border border-zinc-800 hover:bg-zinc-900 rounded text-zinc-300 transition-colors"
+                >
+                    Details
                 </button>
                 <button
                     onClick={(e) => { e.stopPropagation(); router.push(`/agents/${agent.id}/auction`); }}

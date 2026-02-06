@@ -17,6 +17,8 @@ import "../interfaces/IResolver.sol";
  */
 contract TruthStake is Ownable {
     using SafeERC20 for IERC20;
+
+    uint256 private constant BPS_DENOMINATOR = 10_000;
     
     struct Claim {
         uint256 agentId;
@@ -42,16 +44,38 @@ contract TruthStake is Ownable {
     mapping(uint256 => uint256) public agentCorrectClaims;
     mapping(uint256 => uint256) public agentTotalClaims;
     mapping(uint256 => uint256) public agentTotalSlashed;
+    mapping(uint256 => uint256) public agentRewardVault;
     
     uint256 public minStake = 1e6; // 1 USDC (6 decimals)
     uint256 public slashPercent = 50;
+
+    // Bonus paid on correct claims: min(stake * bonusBps, maxBonusPerClaim, rewardVaultBalance)
+    uint256 public rewardBonusBps = 500;       // 5%
+    uint256 public maxBonusPerClaim = 50e6;    // 50 USDC
+
+    // Split of slashAmount in basis points (sum must be 10_000)
+    uint16 public rewardSlashBps = 5000;       // 50% retained in contract as reward vault liquidity
+    uint16 public protocolSlashBps = 5000;     // 50% sent to slashTreasury
+    uint16 public marketSlashBps = 0;          // optional market impact treasury share
     
     // Treasury for slashed funds (could be burn address or protocol treasury)
     address public slashTreasury;
+    address public marketImpactTreasury;
     
     event ClaimSubmitted(bytes32 indexed claimId, uint256 indexed agentId, address submitter, bytes32 claimHash, uint256 stake);
-    event ClaimResolved(bytes32 indexed claimId, uint256 indexed agentId, bool wasCorrect, uint256 slashAmount);
+    event ClaimResolved(bytes32 indexed claimId, uint256 indexed agentId, bool wasCorrect, uint256 slashAmount, uint256 bonusAmount);
     event ResolverUpdated(address indexed oldResolver, address indexed newResolver);
+    event RewardVaultFunded(uint256 indexed agentId, address indexed funder, uint256 amount, uint256 totalBalance);
+    event SlashSplitUpdated(uint16 rewardSlashBps, uint16 protocolSlashBps, uint16 marketSlashBps);
+    event RewardConfigUpdated(uint256 rewardBonusBps, uint256 maxBonusPerClaim);
+    event MarketImpactTreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
+    event SlashDistributed(
+        bytes32 indexed claimId,
+        uint256 indexed agentId,
+        uint256 rewardShare,
+        uint256 protocolShare,
+        uint256 marketShare
+    );
     
     error ClaimAlreadyExists();
     error ClaimNotFound();
@@ -60,6 +84,10 @@ contract TruthStake is Ownable {
     error StakeTooLow();
     error InvalidResolvesAt();
     error UnauthorizedAgentWallet();
+    error InvalidAddress();
+    error InvalidSplitBps();
+    error InvalidPercent();
+    error InvalidAmount();
     
     constructor(
         address _usdc, 
@@ -68,6 +96,7 @@ contract TruthStake is Ownable {
         address _resolver,
         address _slashTreasury
     ) Ownable(msg.sender) {
+        if (_slashTreasury == address(0)) revert InvalidAddress();
         usdc = IERC20(_usdc);
         identityRegistry = IIdentityRegistry(_identityRegistry);
         reputationRegistry = IReputationRegistry(_reputationRegistry);
@@ -143,10 +172,21 @@ contract TruthStake is Ownable {
         claim.wasCorrect = wasCorrect;
         
         uint256 slashAmount = 0;
+        uint256 bonusAmount = 0;
         
         if (wasCorrect) {
-            // Return stake to submitter
-            usdc.safeTransfer(claim.submitter, claim.stake);
+            uint256 bonusCandidate = (claim.stake * rewardBonusBps) / BPS_DENOMINATOR;
+            if (bonusCandidate > maxBonusPerClaim) bonusCandidate = maxBonusPerClaim;
+
+            uint256 vaultBalance = agentRewardVault[claim.agentId];
+            bonusAmount = bonusCandidate > vaultBalance ? vaultBalance : bonusCandidate;
+
+            if (bonusAmount > 0) {
+                agentRewardVault[claim.agentId] = vaultBalance - bonusAmount;
+            }
+
+            // Return stake plus bonus
+            usdc.safeTransfer(claim.submitter, claim.stake + bonusAmount);
             agentCorrectClaims[claim.agentId]++;
             
             // Record success in ERC-8004 Reputation Registry
@@ -162,10 +202,22 @@ contract TruthStake is Ownable {
             if (returnAmount > 0) {
                 usdc.safeTransfer(claim.submitter, returnAmount);
             }
-            
-            // Send slashed amount to treasury (or burn)
-            if (slashAmount > 0) {
-                usdc.safeTransfer(slashTreasury, slashAmount);
+
+            uint256 rewardShare = (slashAmount * rewardSlashBps) / BPS_DENOMINATOR;
+            uint256 protocolShare = (slashAmount * protocolSlashBps) / BPS_DENOMINATOR;
+            uint256 marketShare = slashAmount - rewardShare - protocolShare;
+
+            if (rewardShare > 0) {
+                agentRewardVault[claim.agentId] += rewardShare;
+            }
+
+            if (protocolShare > 0) {
+                usdc.safeTransfer(slashTreasury, protocolShare);
+            }
+
+            if (marketShare > 0) {
+                address marketRecipient = marketImpactTreasury == address(0) ? slashTreasury : marketImpactTreasury;
+                usdc.safeTransfer(marketRecipient, marketShare);
             }
             
             // Record slash in ERC-8004 Reputation Registry
@@ -174,9 +226,11 @@ contract TruthStake is Ownable {
             ) {} catch {}
             
             agentTotalSlashed[claim.agentId] += slashAmount;
+
+            emit SlashDistributed(claimId, claim.agentId, rewardShare, protocolShare, marketShare);
         }
         
-        emit ClaimResolved(claimId, claim.agentId, wasCorrect, slashAmount);
+        emit ClaimResolved(claimId, claim.agentId, wasCorrect, slashAmount, bonusAmount);
     }
     
     // ============ View Functions ============
@@ -192,6 +246,13 @@ contract TruthStake is Ownable {
     function getAgentAccuracy(uint256 agentId) external view returns (uint256 correct, uint256 total) {
         return (agentCorrectClaims[agentId], agentTotalClaims[agentId]);
     }
+
+    function fundRewardVault(uint256 agentId, uint256 amount) external {
+        if (amount == 0) revert InvalidAmount();
+        usdc.safeTransferFrom(msg.sender, address(this), amount);
+        agentRewardVault[agentId] += amount;
+        emit RewardVaultFunded(agentId, msg.sender, amount, agentRewardVault[agentId]);
+    }
     
     // ============ Admin Functions ============
     
@@ -205,11 +266,33 @@ contract TruthStake is Ownable {
     }
     
     function setSlashPercent(uint256 _slashPercent) external onlyOwner {
-        require(_slashPercent <= 100, "Invalid percent");
+        if (_slashPercent > 100) revert InvalidPercent();
         slashPercent = _slashPercent;
     }
     
     function setSlashTreasury(address _slashTreasury) external onlyOwner {
+        if (_slashTreasury == address(0)) revert InvalidAddress();
         slashTreasury = _slashTreasury;
+    }
+
+    function setSlashSplit(uint16 _rewardSlashBps, uint16 _protocolSlashBps, uint16 _marketSlashBps) external onlyOwner {
+        uint256 total = uint256(_rewardSlashBps) + uint256(_protocolSlashBps) + uint256(_marketSlashBps);
+        if (total != BPS_DENOMINATOR) revert InvalidSplitBps();
+        rewardSlashBps = _rewardSlashBps;
+        protocolSlashBps = _protocolSlashBps;
+        marketSlashBps = _marketSlashBps;
+        emit SlashSplitUpdated(_rewardSlashBps, _protocolSlashBps, _marketSlashBps);
+    }
+
+    function setRewardConfig(uint256 _rewardBonusBps, uint256 _maxBonusPerClaim) external onlyOwner {
+        if (_rewardBonusBps > BPS_DENOMINATOR) revert InvalidPercent();
+        rewardBonusBps = _rewardBonusBps;
+        maxBonusPerClaim = _maxBonusPerClaim;
+        emit RewardConfigUpdated(_rewardBonusBps, _maxBonusPerClaim);
+    }
+
+    function setMarketImpactTreasury(address _marketImpactTreasury) external onlyOwner {
+        emit MarketImpactTreasuryUpdated(marketImpactTreasury, _marketImpactTreasury);
+        marketImpactTreasury = _marketImpactTreasury;
     }
 }

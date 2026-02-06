@@ -8,6 +8,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {AgentToken} from "./AgentToken.sol";
 import {IContinuousClearingAuctionFactory, IContinuousClearingAuction, AuctionParameters} from "../interfaces/cca/IUniswapCCA.sol";
 import {IIdentityRegistry} from "../interfaces/IIdentityRegistry.sol";
+import {IPostAuctionLiquidityManager} from "../interfaces/IPostAuctionLiquidityManager.sol";
 
 /**
  * @title AgentTokenFactory
@@ -23,6 +24,8 @@ contract AgentTokenFactory is Ownable {
     IIdentityRegistry public immutable identityRegistry;
     
     address public paymentToken;           // USDC
+    address public liquidityManager;       // Receives auction sweeps and LP reserve
+    uint16 public lpReserveBps = 1000;     // 10% reserve relative to tokensForSale
     
     mapping(uint256 => address) public agentTokens;  // agentId => token address
     mapping(uint256 => address) public agentAuctions; // agentId => auction address
@@ -31,7 +34,15 @@ contract AgentTokenFactory is Ownable {
     // ============ Events ============
     
     event TokenCreated(uint256 indexed agentId, address token, string name, string symbol);
-    event AuctionLaunched(uint256 indexed agentId, address token, address auction, uint256 tokensForSale);
+    event AuctionLaunched(
+        uint256 indexed agentId,
+        address token,
+        address auction,
+        uint256 tokensForSale,
+        uint256 lpReserveTokens
+    );
+    event LiquidityManagerUpdated(address indexed oldManager, address indexed newManager);
+    event LpReserveBpsUpdated(uint16 oldBps, uint16 newBps);
     
     // ============ Errors ============
     
@@ -39,6 +50,9 @@ contract AgentTokenFactory is Ownable {
     error AlreadyLaunched();
     error InsufficientTokens();
     error InvalidParams();
+    error LiquidityManagerNotSet();
+    error InvalidLiquidityManager();
+    error InvalidLpReserveBps();
 
     // ============ Constructor ============
 
@@ -77,6 +91,9 @@ contract AgentTokenFactory is Ownable {
         uint256 tickSpacing,
         bytes calldata auctionStepsData
     ) external {
+        // startPrice is kept for frontend compatibility; CCA uses floor/tick constraints.
+        startPrice;
+
         // Verify caller is agent owner
         address agentOwner = identityRegistry.ownerOf(agentId);
         if (msg.sender != agentOwner) revert NotAgentOwner();
@@ -87,6 +104,9 @@ contract AgentTokenFactory is Ownable {
         // Validate params
         if (tokensForSale == 0) revert InsufficientTokens();
         if (auctionStepsData.length == 0) revert InvalidParams();
+        if (liquidityManager == address(0)) revert LiquidityManagerNotSet();
+
+        uint256 lpReserveTokens = (tokensForSale * lpReserveBps) / 10_000;
 
         // 1. Create Token
         AgentToken token = new AgentToken(agentId, name, symbol, address(this));
@@ -97,8 +117,8 @@ contract AgentTokenFactory is Ownable {
         // 2. Configure Auction
         AuctionParameters memory params = AuctionParameters({
             currency: paymentToken,
-            tokensRecipient: msg.sender, // Unsold tokens go back to owner
-            fundsRecipient: msg.sender,  // Funds go to owner (for now)
+            tokensRecipient: liquidityManager, // Unsold tokens flow to manager
+            fundsRecipient: liquidityManager,  // Raised funds flow to manager
             startBlock: uint64(block.number),
             endBlock: uint64(block.number + durationBlocks),
             claimBlock: uint64(block.number + durationBlocks),
@@ -122,16 +142,29 @@ contract AgentTokenFactory is Ownable {
         agentAuctions[agentId] = auctionAddress;
         hasLaunched[agentId] = true;
 
-        // 4. Mint tokens to Auction
+        // 4. Mint tokens to auction plus LP reserve inventory to manager.
         token.mint(auctionAddress, tokensForSale);
+        if (lpReserveTokens > 0) {
+            token.mint(liquidityManager, lpReserveTokens);
+        }
+
+        // 5. Register auction context with manager for post-auction handling.
+        IPostAuctionLiquidityManager(liquidityManager).registerAuction(
+            agentId,
+            msg.sender,
+            address(token),
+            auctionAddress,
+            paymentToken,
+            lpReserveTokens
+        );
         
-        // 5. Notify Auction of receipt
+        // 6. Notify Auction of receipt
         IContinuousClearingAuction(auctionAddress).onTokensReceived();
         
-        // 6. Seal token supply (optional, or keep mintable)
+        // 7. Seal token supply after both mints are complete.
         token.endAuction(); // Prevents further factory minting
         
-        emit AuctionLaunched(agentId, address(token), auctionAddress, tokensForSale);
+        emit AuctionLaunched(agentId, address(token), auctionAddress, tokensForSale, lpReserveTokens);
     }
     
     // ============ View Functions ============
@@ -142,5 +175,19 @@ contract AgentTokenFactory is Ownable {
     
     function getAgentAuction(uint256 agentId) external view returns (address) {
         return agentAuctions[agentId];
+    }
+
+    // ============ Admin Functions ============
+
+    function setLiquidityManager(address _liquidityManager) external onlyOwner {
+        if (_liquidityManager == address(0)) revert InvalidLiquidityManager();
+        emit LiquidityManagerUpdated(liquidityManager, _liquidityManager);
+        liquidityManager = _liquidityManager;
+    }
+
+    function setLpReserveBps(uint16 _lpReserveBps) external onlyOwner {
+        if (_lpReserveBps > 5000) revert InvalidLpReserveBps(); // hard cap 50%
+        emit LpReserveBpsUpdated(lpReserveBps, _lpReserveBps);
+        lpReserveBps = _lpReserveBps;
     }
 }
