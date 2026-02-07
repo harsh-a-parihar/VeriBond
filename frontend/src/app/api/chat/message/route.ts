@@ -10,9 +10,9 @@ type EndpointRequestPayload = {
     timestamp: number;
 };
 
-const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
-const AGENT_CHAT_TIMEOUT_MS = Number(process.env.AGENT_CHAT_TIMEOUT_MS ?? '15000');
-const AGENT_CHAT_MAX_RETRIES = Math.max(0, Number(process.env.AGENT_CHAT_MAX_RETRIES ?? '2'));
+const RETRYABLE_STATUS_CODES = new Set([408, 425, 500, 502, 503, 504]);
+const AGENT_CHAT_TIMEOUT_MS = Math.max(5000, Number(process.env.AGENT_CHAT_TIMEOUT_MS ?? '60000'));
+const AGENT_CHAT_MAX_RETRIES = Math.max(0, Number(process.env.AGENT_CHAT_MAX_RETRIES ?? '0'));
 const AGENT_CHAT_RETRY_BASE_MS = Math.max(100, Number(process.env.AGENT_CHAT_RETRY_BASE_MS ?? '350'));
 
 class EndpointHttpError extends Error {
@@ -49,6 +49,15 @@ function extractReplyFromJson(payload: unknown): string | null {
     }
 
     return null;
+}
+
+function isAgentFailurePayload(text: string): boolean {
+    const normalized = text.trim().toLowerCase();
+    if (!normalized) return true;
+    return normalized.startsWith('llm error:')
+        || normalized.includes('"status": "resource_exhausted"'.toLowerCase())
+        || normalized.includes('quota exceeded')
+        || normalized.includes('rate limit');
 }
 
 function resolveRelativeUrl(baseUrl: string, candidate: string): string | null {
@@ -140,24 +149,34 @@ async function callAgentEndpoint(url: string, payload: EndpointRequestPayload): 
                 try {
                     const json = JSON.parse(rawText) as unknown;
                     const reply = extractReplyFromJson(json);
-                    if (reply) return reply;
-                    return rawText || 'Agent responded with an empty JSON payload.';
+                    const output = reply || rawText || 'Agent responded with an empty JSON payload.';
+                    if (isAgentFailurePayload(output)) {
+                        throw new Error(`Agent backend error: ${output.slice(0, 280)}`);
+                    }
+                    return output;
                 } catch {
                     // Fall through to text return.
                 }
             }
 
-            return rawText?.trim() || 'Agent responded with an empty message.';
+            const output = rawText?.trim() || 'Agent responded with an empty message.';
+            if (isAgentFailurePayload(output)) {
+                throw new Error(`Agent backend error: ${output.slice(0, 280)}`);
+            }
+            return output;
         } catch (error) {
             lastError = error;
+            const normalizedError = (error instanceof DOMException && error.name === 'AbortError')
+                ? new Error(`Agent endpoint timeout after ${Math.floor(AGENT_CHAT_TIMEOUT_MS / 1000)}s (${url})`)
+                : error;
             const isLastAttempt = attempt >= AGENT_CHAT_MAX_RETRIES;
             const isRetriable =
-                (error instanceof EndpointHttpError && error.retriable)
-                || (error instanceof DOMException && error.name === 'AbortError')
-                || (error instanceof TypeError);
+                (normalizedError instanceof EndpointHttpError && normalizedError.retriable)
+                || (normalizedError instanceof Error && normalizedError.message.includes('timeout'))
+                || (normalizedError instanceof TypeError);
 
             if (isLastAttempt || !isRetriable) {
-                throw error;
+                throw normalizedError;
             }
 
             const backoffMs = AGENT_CHAT_RETRY_BASE_MS * (2 ** attempt);

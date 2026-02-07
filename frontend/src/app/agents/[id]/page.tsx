@@ -41,6 +41,7 @@ type AgentRecord = {
     description?: string;
     image?: string;
     ticker?: string;
+    endpoints?: Array<{ type?: string; value?: string; url?: string; endpoint?: string; uri?: string }>;
     claimed_name?: string;
     trust_score?: number;
     owner?: string;
@@ -49,6 +50,23 @@ type AgentRecord = {
 type AgentsApiResponse = {
     agents?: AgentRecord[];
 };
+
+function normalizeMetadataEndpoints(input: unknown): Array<{ type?: string; value?: string }> {
+    if (!Array.isArray(input)) return [];
+    const out: Array<{ type?: string; value?: string }> = [];
+
+    for (const row of input) {
+        if (!row || typeof row !== 'object') continue;
+        const candidate = row as Record<string, unknown>;
+        const typeRaw = typeof candidate.type === 'string' ? candidate.type.trim().toUpperCase() : '';
+        const valueRaw = candidate.value ?? candidate.url ?? candidate.endpoint ?? candidate.uri;
+        const value = typeof valueRaw === 'string' ? valueRaw.trim() : '';
+        if (!value) continue;
+        out.push({ type: typeRaw || 'A2A', value });
+    }
+
+    return out;
+}
 
 export default function AgentDetailPage() {
     const params = useParams();
@@ -155,11 +173,13 @@ export default function AgentDetailPage() {
                     const agent = data.agents?.find((a) => a.id === agentId.toString());
                     if (agent) {
                         console.log('[Agent] Found in DB:', agent);
+                        const endpoints = normalizeMetadataEndpoints(agent.endpoints);
                         dbMetadata = {
                             name: agent.name,
                             description: agent.description,
                             image: agent.image,
-                            symbol: agent.ticker
+                            symbol: agent.ticker,
+                            endpoints: endpoints.length > 0 ? endpoints : undefined,
                         };
                         setMetadata(dbMetadata);
                         // ENS subname data
@@ -185,31 +205,32 @@ export default function AgentDetailPage() {
                     try {
                         const base64 = tokenURI.slice('data:application/json;base64,'.length);
                         const decoded = JSON.parse(atob(base64)) as AgentMetadata;
-                        setMetadata((prev) => ({ ...(prev ?? dbMetadata ?? {}), ...decoded }));
+                        const endpoints = normalizeMetadataEndpoints((decoded as { endpoints?: unknown }).endpoints);
+                        setMetadata((prev) => ({
+                            ...(prev ?? dbMetadata ?? {}),
+                            ...decoded,
+                            endpoints: endpoints.length > 0 ? endpoints : (prev?.endpoints ?? dbMetadata?.endpoints),
+                        }));
                         return;
                     } catch (e) {
                         console.warn('[Agent] Failed to decode data URI metadata:', e);
                     }
                 }
 
-                const gateways = [
-                    'https://ipfs.io/ipfs/',
-                    'https://gateway.pinata.cloud/ipfs/',
-                    'https://dweb.link/ipfs/'
-                ];
-                const hash = tokenURI.replace('ipfs://', '');
-
-                for (const gateway of gateways) {
-                    try {
-                        const url = `${gateway}${hash}`;
-                        const res = await fetch(url);
-                        if (!res.ok) throw new Error(`Status ${res.status}`);
-                        const json = await res.json() as AgentMetadata;
-                        setMetadata((prev) => ({ ...(prev ?? dbMetadata ?? {}), ...json }));
-                        return;
-                    } catch (e) {
-                        console.warn(`[Agent] Gateway failed ${gateway}:`, e);
-                    }
+                try {
+                    const res = await fetch(`/api/metadata/resolve?uri=${encodeURIComponent(tokenURI)}`);
+                    if (!res.ok) throw new Error(`Status ${res.status}`);
+                    const data = await res.json() as { metadata?: AgentMetadata };
+                    const json = data.metadata ?? {};
+                    const endpoints = normalizeMetadataEndpoints((json as { endpoints?: unknown }).endpoints);
+                    setMetadata((prev) => ({
+                        ...(prev ?? dbMetadata ?? {}),
+                        ...json,
+                        endpoints: endpoints.length > 0 ? endpoints : (prev?.endpoints ?? dbMetadata?.endpoints),
+                    }));
+                    return;
+                } catch (e) {
+                    console.warn('[Agent] Metadata resolver failed:', e);
                 }
             }
 

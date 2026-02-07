@@ -684,3 +684,52 @@ export async function rollbackChatSessionSettlement(params: {
         client.release();
     }
 }
+
+export async function closeChatSession(params: {
+    sessionId: string;
+    payer: string;
+}): Promise<ChatSession> {
+    await ensureChatRailSchema();
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const sessionResult = await client.query<SessionRow>(
+            `SELECT * FROM chat_sessions WHERE id = $1 FOR UPDATE`,
+            [params.sessionId]
+        );
+
+        if (sessionResult.rowCount === 0) {
+            throw new Error('Session not found');
+        }
+
+        const row = sessionResult.rows[0];
+        if (row.payer.toLowerCase() !== params.payer.toLowerCase()) {
+            throw new Error('Session payer mismatch');
+        }
+        if (row.status !== 'open') {
+            throw new Error('Session is not open');
+        }
+        if (BigInt(row.unsettled_micro) > BigInt(0)) {
+            throw new Error('Session has unsettled usage. Settle before closing.');
+        }
+
+        const updatedResult = await client.query<SessionRow>(
+            `UPDATE chat_sessions
+             SET status = 'closed',
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+            [params.sessionId]
+        );
+
+        await client.query('COMMIT');
+        return toChatSession(updatedResult.rows[0]);
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
+}

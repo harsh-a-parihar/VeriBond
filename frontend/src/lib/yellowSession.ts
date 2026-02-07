@@ -217,28 +217,6 @@ async function fetchChainAssetsResponse(ws: WebSocket): Promise<RpcResponse> {
     return await sendRpc(ws, createGetAssetsMessageV2(getYellowChainIdOrDefault()));
 }
 
-function isHexAddress(value: string): boolean {
-    return /^0x[0-9a-fA-F]{40}$/.test(value.trim());
-}
-
-async function resolveSettlementAsset(ws: WebSocket, authAsset: string): Promise<string> {
-    if (isHexAddress(authAsset)) return authAsset;
-
-    const response = await fetchChainAssetsResponse(ws);
-    if (response.method !== RPCMethod.GetAssets && response.method !== RPCMethod.Assets) {
-        return authAsset;
-    }
-
-    const normalized = authAsset.trim().toLowerCase();
-    const assets = (response.params as { assets?: Array<{ token?: string; symbol?: string }> }).assets ?? [];
-    const match = assets.find((entry) => (entry.symbol ?? '').trim().toLowerCase() === normalized);
-    if (match?.token && isHexAddress(match.token)) {
-        return match.token;
-    }
-
-    return authAsset;
-}
-
 async function authenticate(ws: WebSocket, operatorPrivateKey: Hex, application: string, scope: string, asset: string): Promise<{
     operatorAddress: Address;
     authAsset: string;
@@ -308,7 +286,7 @@ async function authenticate(ws: WebSocket, operatorPrivateKey: Hex, application:
         return {
             operatorAddress: account.address,
             authAsset: selectedAsset,
-            settlementAsset: await resolveSettlementAsset(ws, selectedAsset),
+            settlementAsset: selectedAsset,
         };
     } catch (error) {
         if (!isUnsupportedTokenError(error)) throw error;
@@ -326,7 +304,7 @@ async function authenticate(ws: WebSocket, operatorPrivateKey: Hex, application:
                 return {
                     operatorAddress: account.address,
                     authAsset: selectedAsset,
-                    settlementAsset: await resolveSettlementAsset(ws, selectedAsset),
+                    settlementAsset: selectedAsset,
                 };
             } catch (candidateError) {
                 if (!isUnsupportedTokenError(candidateError)) throw candidateError;
@@ -596,6 +574,7 @@ export async function closeYellowAppSession(params: {
     appSessionId: Hex;
     currentVersion: number;
     agentRecipient: Address;
+    totalSettledMicroUsdc?: string;
     asset?: string | null;
 }): Promise<YellowSettlementResult> {
     const wsUrl = getYellowWsUrl();
@@ -611,15 +590,17 @@ export async function closeYellowAppSession(params: {
         const scope = getScope(params.sessionId);
         const { operatorAddress, settlementAsset } = await authenticate(ws, operatorPrivateKey, application, scope, asset);
         const signer = createECDSAMessageSigner(operatorPrivateKey);
+        const finalRecipientAmount = BigInt(params.totalSettledMicroUsdc ?? '0');
 
         const message = await createCloseAppSessionMessage(signer, {
             app_session_id: params.appSessionId,
             allocations: [
                 { participant: operatorAddress, asset: settlementAsset, amount: '0' },
-                { participant: params.agentRecipient, asset: settlementAsset, amount: '0' },
+                { participant: params.agentRecipient, asset: settlementAsset, amount: finalRecipientAmount.toString() },
             ],
             session_data: JSON.stringify({
                 sessionId: params.sessionId,
+                totalSettledMicroUsdc: finalRecipientAmount.toString(),
                 closedAt: Date.now(),
             }),
         });

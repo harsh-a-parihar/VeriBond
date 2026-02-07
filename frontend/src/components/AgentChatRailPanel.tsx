@@ -1,9 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Address } from 'viem';
 import { useAccount, useSignMessage } from 'wagmi';
-import { MessageSquare, Send, Wallet, Zap, RefreshCw } from 'lucide-react';
+import { MessageSquare, Send, Wallet, Zap, RefreshCw, XCircle } from 'lucide-react';
 import { buildChatSessionAuthMessage, createChatSessionAuthPayload } from '@/lib/chatAuth';
 
 type Endpoint = {
@@ -56,6 +56,15 @@ type YellowSnapshot = {
 type YellowSessionInit = {
     enabled: boolean;
     created: boolean;
+    appSessionId?: string;
+    version?: number;
+    status?: string;
+    error?: string;
+};
+
+type YellowCloseResult = {
+    enabled: boolean;
+    ok: boolean;
     appSessionId?: string;
     version?: number;
     status?: string;
@@ -129,11 +138,21 @@ export default function AgentChatRailPanel({
     const [sessionLoading, setSessionLoading] = useState(false);
     const [sending, setSending] = useState(false);
     const [settling, setSettling] = useState(false);
+    const [closing, setClosing] = useState(false);
+
+    useEffect(() => {
+        if (safeTrim(selectedEndpoint).length > 0) return;
+        if (availableEndpoints.length === 0) return;
+        const first = availableEndpoints[0];
+        setSelectedEndpoint(safeTrim(first.value));
+        setSelectedEndpointType((first.type ?? 'REST').toUpperCase());
+    }, [availableEndpoints, selectedEndpoint]);
 
     const hasWallet = !!walletAddress;
+    const isSessionOpen = session?.status === 'open';
 
     const canOpenSession = hasWallet && !!agentRecipient && safeTrim(selectedEndpoint).length > 0 && !sessionLoading;
-    const canSend = !!session && hasWallet && safeTrim(input).length > 0 && !sending;
+    const canSend = !!session && isSessionOpen && hasWallet && safeTrim(input).length > 0 && !sending;
 
     const handleSelectEndpoint = (value: string) => {
         const match = availableEndpoints.find((e) => e.value === value);
@@ -196,7 +215,7 @@ export default function AgentChatRailPanel({
     };
 
     const settleSession = async () => {
-        if (!session || !walletAddress) return;
+        if (!session || !walletAddress || session.status !== 'open') return;
         setSettling(true);
         setStatusMessage('Settling unsettled usage to network...');
 
@@ -226,8 +245,56 @@ export default function AgentChatRailPanel({
         }
     };
 
+    const closeSession = async () => {
+        if (!session || !walletAddress || session.status !== 'open') return;
+        if (Number(session.unsettledMicroUsdc) > 0) {
+            setStatusMessage('Settle unsettled usage before closing.');
+            return;
+        }
+
+        setClosing(true);
+        setStatusMessage('Closing session...');
+
+        try {
+            const res = await fetch('/api/chat/close', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sessionId: session.id,
+                    payer: walletAddress,
+                }),
+            });
+            const data = await res.json() as {
+                session?: ChatSession;
+                earnings?: AgentEarnings;
+                yellowClose?: YellowCloseResult | null;
+                error?: string;
+            };
+            if (!res.ok) {
+                throw new Error(data.error || 'Close failed');
+            }
+
+            if (data.session) {
+                setSession(data.session);
+            }
+            if (data.earnings) {
+                setEarnings(data.earnings);
+            }
+            if (data.yellowClose?.enabled && !data.yellowClose.ok) {
+                setStatusMessage(data.yellowClose.error || 'Session close partially failed on Yellow');
+            } else {
+                setStatusMessage('Session closed.');
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Close failed';
+            setStatusMessage(message);
+        } finally {
+            setClosing(false);
+        }
+    };
+
     const sendMessage = async () => {
-        if (!session || !walletAddress || !input.trim()) return;
+        if (sending || !session || !walletAddress || !input.trim()) return;
 
         const userContent = input.trim();
         setInput('');
@@ -281,8 +348,13 @@ export default function AgentChatRailPanel({
                     </div>
                 </div>
                 {session && (
-                    <span className="px-2.5 py-1 text-[10px] border rounded-full font-semibold uppercase tracking-wider text-yellow-300 border-yellow-800 bg-yellow-950/30">
-                        Session Open
+                    <span className={`px-2.5 py-1 text-[10px] border rounded-full font-semibold uppercase tracking-wider ${
+                        isSessionOpen
+                            ? 'text-yellow-300 border-yellow-800 bg-yellow-950/30'
+                            : 'text-zinc-300 border-zinc-700 bg-zinc-900/40'
+                    }`}
+                    >
+                        {isSessionOpen ? 'Session Open' : 'Session Closed'}
                     </span>
                 )}
             </div>
@@ -371,18 +443,26 @@ export default function AgentChatRailPanel({
             <div className="flex flex-wrap gap-2">
                 <button
                     onClick={openSession}
-                    disabled={!canOpenSession || !!session}
+                    disabled={!canOpenSession || isSessionOpen}
                     className="h-10 px-4 rounded-md border border-yellow-700 bg-yellow-600/20 text-yellow-300 hover:bg-yellow-600/30 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold transition-colors"
                 >
-                    {sessionLoading ? 'Opening...' : (session ? 'Session Active' : 'Open Session')}
+                    {sessionLoading ? 'Opening...' : (isSessionOpen ? 'Session Active' : 'Open Session')}
                 </button>
 
                 <button
                     onClick={settleSession}
-                    disabled={!session || settling || Number(session.unsettledMicroUsdc) <= 0}
+                    disabled={!session || session.status !== 'open' || settling || Number(session.unsettledMicroUsdc) <= 0}
                     className="h-10 px-4 rounded-md border border-white/10 bg-zinc-900 text-zinc-200 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold transition-colors flex items-center gap-2"
                 >
                     {settling ? 'Settling...' : (<><RefreshCw className="h-3.5 w-3.5" /> Settle Usage</>)}
+                </button>
+
+                <button
+                    onClick={closeSession}
+                    disabled={!session || session.status !== 'open' || closing || settling || Number(session.unsettledMicroUsdc) > 0}
+                    className="h-10 px-4 rounded-md border border-rose-800/60 bg-rose-950/20 text-rose-300 hover:bg-rose-950/30 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold transition-colors flex items-center gap-2"
+                >
+                    {closing ? 'Closing...' : (<><XCircle className="h-3.5 w-3.5" /> Close Session</>)}
                 </button>
             </div>
 
