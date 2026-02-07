@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any
 
 from semantic_agent.logging_utils import configure_logging
@@ -19,6 +21,154 @@ def _safe_json_loads(text: str) -> dict[str, Any] | None:
         return json.loads(text)
     except Exception:
         return None
+
+
+def _repair_json(text: str) -> str | None:
+    """Strip markdown, extract first {...}, or try to extract relations array for parsing."""
+    s = (text or "").strip()
+    # Remove markdown code fence
+    s = re.sub(r"^```(?:json)?\s*", "", s)
+    s = re.sub(r"\s*```\s*$", "", s)
+    s = s.strip()
+    # Try full object first
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = s[start : end + 1]
+        # Try to fix common bracket imbalances (e.g. missing closing })
+        open_braces = candidate.count("{") - candidate.count("}")
+        if open_braces > 0:
+            candidate = candidate + "}" * open_braces
+        elif open_braces < 0:
+            candidate = candidate[:open_braces]  # trim trailing }
+        return candidate
+    # Try to extract "relations": [...] and wrap
+    idx = s.find('"relations"')
+    if idx == -1:
+        idx = s.find("'relations'")
+    if idx != -1:
+        bracket = s.find("[", idx)
+        if bracket != -1:
+            depth = 1
+            i = bracket + 1
+            while i < len(s) and depth > 0:
+                if s[i] == "[":
+                    depth += 1
+                elif s[i] == "]":
+                    depth -= 1
+                i += 1
+            if depth == 0:
+                arr = s[bracket:i]
+                return '{"relations": ' + arr + "}"
+    return None
+
+
+def _filter_market_ids_by_cosine(
+    market_ids: list[str],
+    chroma_path: Path,
+    collection_name: str,
+    min_cosine_sim: float,
+) -> list[str] | None:
+    """
+    Option B: keep only market ids that have at least one other market in the list
+    with cosine similarity >= min_cosine_sim. Returns None if Chroma unavailable or
+    any id missing (caller keeps all).
+    """
+    if min_cosine_sim <= 0 or not market_ids:
+        return None
+    chroma_path = Path(chroma_path).resolve()
+    if not chroma_path.exists():
+        return None
+    try:
+        import os
+        os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
+        import chromadb
+        from chromadb.config import Settings as ChromaSettings
+        import numpy as np
+    except ImportError:
+        return None
+    try:
+        client = chromadb.PersistentClient(
+            path=str(chroma_path),
+            settings=ChromaSettings(anonymized_telemetry=False),
+        )
+        collection = client.get_collection(name=collection_name)
+    except Exception as e:
+        logger.debug("Chroma unavailable for cosine filter: %s", e)
+        return None
+    result = collection.get(ids=market_ids, include=["embeddings"])
+    ids_returned = result["ids"]
+    embeddings = result["embeddings"]
+    if not ids_returned or len(embeddings) != len(market_ids):
+        return None
+    X = np.asarray(embeddings, dtype=np.float64)
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    X = X / norms
+    sim = X @ X.T
+    np.fill_diagonal(sim, -1.0)
+    max_sim_per_row = np.max(sim, axis=1)
+    keep_ids = [market_ids[i] for i in range(len(market_ids)) if max_sim_per_row[i] >= min_cosine_sim]
+    if len(keep_ids) < 2:
+        return None
+    return keep_ids
+
+
+def _filter_markets_by_time(
+    markets: list[Market],
+    max_start_gap_days: float,
+) -> list[Market]:
+    """
+    Keep only markets that have at least one temporal neighbor in the list.
+    Temporal neighbor: if both have start_time, require overlap or start within max_start_gap_days;
+    if either missing dates, allow.
+    """
+    if max_start_gap_days < 0 or not markets:
+        return markets
+    out: list[Market] = []
+    for mi in markets:
+        has_neighbor = False
+        for mj in markets:
+            if mj.id == mi.id:
+                continue
+            if mi.start_time is None or mj.start_time is None:
+                has_neighbor = True
+                break
+            ei = mi.end_time or mi.start_time
+            ej = mj.end_time or mj.start_time
+            if mi.start_time <= ej and mj.start_time <= ei:
+                has_neighbor = True
+                break
+            gap_days = abs((mi.start_time - mj.start_time).total_seconds()) / 86400.0
+            if gap_days <= max_start_gap_days:
+                has_neighbor = True
+                break
+        if has_neighbor:
+            out.append(mi)
+    return out if len(out) >= 2 else markets
+
+
+def _filter_relations_by_outcome(
+    relations: list[MarketRelation],
+    markets_by_id: dict[str, Market],
+) -> list[MarketRelation]:
+    """Drop relations where both markets are resolved and outcome contradicts prediction."""
+    out: list[MarketRelation] = []
+    for r in relations:
+        ma = markets_by_id.get(r.market_id_i)
+        mb = markets_by_id.get(r.market_id_j)
+        if ma is None or mb is None:
+            out.append(r)
+            continue
+        ai, bi = ma.resolved_outcome, mb.resolved_outcome
+        if ai not in ("YES", "NO") or bi not in ("YES", "NO"):
+            out.append(r)
+            continue
+        same_outcome = (ai == bi)
+        if same_outcome != r.is_same_outcome:
+            continue
+        out.append(r)
+    return out
 
 
 def discover_relations_for_cluster(
@@ -111,12 +261,64 @@ def discover_relations_for_cluster(
                 temperature=0,
             )
 
+    def _parse(content: str) -> dict[str, Any] | None:
+        data = _safe_json_loads(content)
+        if isinstance(data, dict):
+            return data
+        repaired = _repair_json(content)
+        if repaired:
+            data = _safe_json_loads(repaired)
+            if isinstance(data, dict):
+                return data
+        return None
+
+    def _stricter_messages():
+        return [
+            {"role": "system", "content": system + "\n\nOutput ONLY valid JSON. No markdown, no code fences."},
+            {"role": "user", "content": user + "\n\nReply with only a single JSON object, no other text."},
+        ]
+
     resp = retry_llm(_create, max_retries=3, base_delay=1.0)
     content = (resp.choices[0].message.content or "").strip()
-
-    data = _safe_json_loads(content)
+    data = _parse(content)
     if not isinstance(data, dict):
-        logger.warning("Cluster %s: invalid JSON from LLM; skipping", cluster.cluster_id)
+        # First retry with stricter instruction
+        def _retry_create():
+            try:
+                return client.chat.completions.create(
+                    model=openai_model,
+                    messages=_stricter_messages(),
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                )
+            except TypeError:
+                return client.chat.completions.create(
+                    model=openai_model,
+                    messages=_stricter_messages(),
+                    temperature=0,
+                )
+        retry_resp = _retry_create()
+        content = (retry_resp.choices[0].message.content or "").strip()
+        data = _parse(content)
+    if not isinstance(data, dict):
+        # Second retry (Phase 2: reduce lost clusters to bad JSON)
+        try:
+            retry_resp2 = client.chat.completions.create(
+                model=openai_model,
+                messages=_stricter_messages(),
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+        except TypeError:
+            retry_resp2 = client.chat.completions.create(
+                model=openai_model,
+                messages=_stricter_messages(),
+                temperature=0,
+            )
+        content = (retry_resp2.choices[0].message.content or "").strip()
+        data = _parse(content)
+    if not isinstance(data, dict):
+        logger.warning("Cluster %s: invalid JSON from LLM (after 2 retries); skipping", cluster.cluster_id)
         return []
 
     id_to_question = {m.id: (m.question or "").strip() or m.id for m in markets}
@@ -293,6 +495,13 @@ def run_discover_relations(
     all_markets = read_markets(database_url)
     markets_by_id: dict[str, Market] = {m.id: m for m in all_markets}
 
+    # Phase 1 filters: cosine (Option B), time overlap
+    min_cosine_sim = getattr(settings, "relations_min_cosine_sim", 0.0)
+    require_time_overlap = getattr(settings, "relations_require_time_overlap", False)
+    max_start_gap_days = getattr(settings, "relations_max_start_gap_days", 90.0)
+    chroma_path = Path(settings.chroma_persist_path)
+    collection_name = settings.chroma_collection_name
+
     # Build (cluster, market_list) for each cluster that has enough markets
     tasks: list[tuple[Cluster, list[Market]]] = []
     for c in clusters:
@@ -309,6 +518,25 @@ def run_discover_relations(
             continue
         if len(m_list) > max_markets_per_cluster:
             m_list = m_list[:max_markets_per_cluster]
+
+        # Cosine filter (Option B): drop outlier markets with no neighbor above threshold
+        if min_cosine_sim > 0:
+            keep_ids = _filter_market_ids_by_cosine(
+                [m.id for m in m_list], chroma_path, collection_name, min_cosine_sim
+            )
+            if keep_ids is not None:
+                m_list = [m for m in m_list if m.id in keep_ids]
+                if len(m_list) < 2:
+                    logger.debug("Cluster %s skipped (cosine filter left < 2 markets)", c.cluster_id)
+                    continue
+
+        # Time filter: drop markets with no temporal neighbor (only when both have dates)
+        if require_time_overlap:
+            m_list = _filter_markets_by_time(m_list, max_start_gap_days)
+            if len(m_list) < 2:
+                logger.debug("Cluster %s skipped (time filter left < 2 markets)", c.cluster_id)
+                continue
+
         tasks.append((c, m_list))
 
     logger.info(
@@ -342,6 +570,9 @@ def run_discover_relations(
                 if relations is None:
                     failed_clusters.append(cid)
                     continue
+                # Phase 1: outcome filter — do not store if both resolved and outcome contradicts prediction
+                if getattr(settings, "relations_outcome_filter", True):
+                    relations = _filter_relations_by_outcome(relations, markets_by_id)
                 try:
                     write_relations_for_cluster(
                         database_url, cluster_id=cid, relations=relations

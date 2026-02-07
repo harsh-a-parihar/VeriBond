@@ -91,8 +91,93 @@ def init_schema(database_url: str) -> None:
             conn.execute("ALTER TABLE relations ADD COLUMN shared_event TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
+        # Phase 2: embedding cache for OpenAI (avoid re-calling API on re-runs)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                market_id TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                embedding_json TEXT NOT NULL,
+                PRIMARY KEY (market_id, text_hash, provider, model_name)
+            )
+            """
+        )
         conn.commit()
         logger.info("Schema initialized at %s", path)
+    finally:
+        conn.close()
+
+
+def get_cached_embeddings(
+    database_url: str,
+    provider: str,
+    model_name: str,
+    keys: list[tuple[str, str]],
+) -> dict[tuple[str, str], list[float]]:
+    """
+    Look up cached embeddings by (market_id, text_hash) for given provider and model.
+    keys: list of (market_id, text_hash).
+    Returns dict mapping (market_id, text_hash) -> list[float] for cache hits.
+    """
+    if not keys:
+        return {}
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        return {}
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.row_factory = sqlite3.Row
+        out: dict[tuple[str, str], list[float]] = {}
+        for market_id, text_hash in keys:
+            row = conn.execute(
+                """
+                SELECT embedding_json FROM embedding_cache
+                WHERE market_id = ? AND text_hash = ? AND provider = ? AND model_name = ?
+                """,
+                (market_id, text_hash, provider, model_name),
+            ).fetchone()
+            if row is not None:
+                try:
+                    vec = json.loads(row["embedding_json"])
+                    if isinstance(vec, list):
+                        out[(market_id, text_hash)] = [float(x) for x in vec]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return out
+    finally:
+        conn.close()
+
+
+def set_cached_embeddings(
+    database_url: str,
+    provider: str,
+    model_name: str,
+    entries: list[tuple[str, str, list[float]]],
+) -> None:
+    """
+    Store embeddings in cache. entries: list of (market_id, text_hash, embedding_list).
+    """
+    if not entries:
+        return
+    path = _sqlite_path(database_url)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    init_schema(database_url)
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO embedding_cache (market_id, text_hash, provider, model_name, embedding_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (market_id, text_hash, provider, model_name, json.dumps(emb))
+                for market_id, text_hash, emb in entries
+            ],
+        )
+        conn.commit()
+        logger.debug("Cached %d embeddings for %s/%s", len(entries), provider, model_name)
     finally:
         conn.close()
 

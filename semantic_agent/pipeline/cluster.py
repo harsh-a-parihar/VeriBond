@@ -18,6 +18,57 @@ logger = logging.getLogger(__name__)
 _MINIBATCH_THRESHOLD = 5000
 
 
+def compute_cluster_quality(X: np.ndarray, labels: np.ndarray) -> dict[str, float]:
+    """
+    Compute intra-cluster mean cosine, inter-cluster mean cosine, and silhouette (cosine).
+    X: (n, dim) embeddings; labels: (n,) cluster ids.
+    Returns dict with intra_cosine_mean, inter_cosine_mean, silhouette (higher intra and silhouette = better; lower inter = better).
+    """
+    from sklearn.metrics import silhouette_score
+
+    n, dim = X.shape
+    k = int(labels.max()) + 1
+    # Normalize for cosine
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    X_norm = X / norms
+
+    intra_cosines: list[float] = []
+    centroids = []
+    for i in range(k):
+        mask = labels == i
+        if mask.sum() < 2:
+            if mask.sum() == 1:
+                centroids.append(X_norm[mask].ravel())
+            continue
+        pts = X_norm[mask]
+        centroid = pts.mean(axis=0)
+        centroid = centroid / (np.linalg.norm(centroid) or 1.0)
+        centroids.append(centroid)
+        sims = np.dot(pts, centroid)
+        intra_cosines.extend(sims.tolist())
+
+    intra_cosine_mean = float(np.mean(intra_cosines)) if intra_cosines else 0.0
+
+    if len(centroids) < 2:
+        inter_cosine_mean = 0.0
+    else:
+        C = np.array(centroids)
+        inter_sim = np.dot(C, C.T)
+        np.fill_diagonal(inter_sim, np.nan)
+        inter_cosine_mean = float(np.nanmean(inter_sim))
+
+    try:
+        sil = silhouette_score(X_norm, labels, metric="cosine")
+    except Exception:
+        sil = float("nan")
+    return {
+        "intra_cosine_mean": intra_cosine_mean,
+        "inter_cosine_mean": inter_cosine_mean,
+        "silhouette": float(sil) if not np.isnan(sil) else 0.0,
+    }
+
+
 def run_cluster_and_store(
     database_url: str,
     *,
@@ -94,6 +145,15 @@ def run_cluster_and_store(
     else:
         kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
     labels = kmeans.fit_predict(X)
+
+    # Phase 2: cluster quality metrics (intra/inter cosine, silhouette)
+    quality = compute_cluster_quality(X, labels)
+    logger.info(
+        "Cluster quality: intra_cosine_mean=%.3f, inter_cosine_mean=%.3f, silhouette=%.3f",
+        quality["intra_cosine_mean"],
+        quality["inter_cosine_mean"],
+        quality["silhouette"],
+    )
 
     clusters: list[Cluster] = []
     log_every = max(1, k // 10)  # log every 10% of clusters
