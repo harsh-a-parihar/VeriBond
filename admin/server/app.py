@@ -37,6 +37,7 @@ class IngestBody(BaseModel):
 class RunFullBody(BaseModel):
     csv_path: str | None = Field(None, description="Filename in data/raw; default polymarket_markets.csv")
     nrows: int | None = Field(None, description="Max CSV rows; null = all")
+    use_all_sources: bool = Field(True, description="If True, ingest from Gamma API + CSV; if False, CSV only")
 
 
 class RelationsBody(BaseModel):
@@ -45,6 +46,13 @@ class RelationsBody(BaseModel):
         description="If True, skip clusters that already have relations (resume mode)",
     )
     parallel_workers: int | None = Field(None, description="Number of parallel workers; default from config (e.g. 5)")
+
+
+class EvaluateBody(BaseModel):
+    min_confidence: float | None = Field(
+        None,
+        description="If set (e.g. 0.85), only evaluate relations with confidence >= this; report accuracy on that subset",
+    )
 
 
 def _resolve_csv_path(csv_path: str | None, raw_dir: Path) -> Path:
@@ -72,7 +80,7 @@ def _raw_data_dir_absolute() -> Path:
 def startup():
     import logging
     from semantic_agent.logging_utils import configure_logging
-    from admin.server.log_buffer import install_buffer_handler
+    from .log_buffer import install_buffer_handler
     configure_logging()
     install_buffer_handler()
 
@@ -82,7 +90,7 @@ def startup():
 @app.get("/api/logs")
 def api_get_logs(tail: int = 500):
     """Return last `tail` log lines (newest last)."""
-    from admin.server.log_buffer import get_logs as get_log_lines
+    from .log_buffer import get_logs as get_log_lines
     if tail < 1 or tail > 5000:
         tail = 500
     return {"lines": get_log_lines(tail=tail)}
@@ -91,7 +99,7 @@ def api_get_logs(tail: int = 500):
 @app.delete("/api/logs")
 def api_clear_logs():
     """Clear the in-memory log buffer."""
-    from admin.server.log_buffer import clear_logs as clear_log_buffer
+    from .log_buffer import clear_logs as clear_log_buffer
     clear_log_buffer()
     return {"ok": True}
 
@@ -207,11 +215,12 @@ def pipeline_relations(body: RelationsBody | None = None):
 
 
 @app.post("/api/pipeline/evaluate")
-def pipeline_evaluate():
-    """Evaluate predicted relations against resolved outcomes."""
+def pipeline_evaluate(body: EvaluateBody | None = None):
+    """Evaluate predicted relations against resolved outcomes. Body: min_confidence (optional, e.g. 0.85)."""
     from semantic_agent.pipeline.evaluate import run_evaluate_relations, EvalResult
-    result: EvalResult = run_evaluate_relations(_db_url())
-    return {
+    body = body or EvaluateBody()
+    result: EvalResult = run_evaluate_relations(_db_url(), min_confidence_override=body.min_confidence)
+    payload = {
         "ok": True,
         "total_relations": result.total_relations,
         "total_evaluable": result.total_evaluable,
@@ -220,20 +229,27 @@ def pipeline_evaluate():
         "by_cluster": {k: {"n": v.n, "correct": v.correct, "accuracy": v.accuracy} for k, v in result.by_cluster.items()},
         "by_confidence_bucket": {k: {"n": v.n, "correct": v.correct, "accuracy": v.accuracy} for k, v in result.by_confidence_bucket.items()},
     }
+    if body.min_confidence is not None:
+        payload["min_confidence_used"] = body.min_confidence
+    return payload
 
 
 @app.post("/api/pipeline/run-full")
 def pipeline_run_full(body: RunFullBody | None = None):
-    """Reset, ingest, embed, cluster, label, relations, evaluate. Body: csv_path, nrows (optional)."""
+    """Reset, ingest (Gamma + CSV or CSV only), embed, cluster, label, relations, evaluate."""
     from semantic_agent.config import get_settings
     from semantic_agent.pipeline.run_full import run_full_pipeline
     body = body or RunFullBody()
     raw_dir = _raw_data_dir_absolute()
-    csv_path = _resolve_csv_path(body.csv_path, raw_dir) if body.csv_path else None
-    if csv_path is not None and not csv_path.exists():
+    csv_path = _resolve_csv_path(body.csv_path or "polymarket_markets.csv", raw_dir)
+    if not body.use_all_sources and not csv_path.exists():
         raise HTTPException(status_code=404, detail=f"CSV not found: {csv_path}")
     try:
-        result = run_full_pipeline(csv_path=csv_path, nrows=body.nrows)
+        result = run_full_pipeline(
+            csv_path=csv_path,
+            nrows=body.nrows,
+            use_all_sources=body.use_all_sources,
+        )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {

@@ -96,8 +96,8 @@ def run_embed_and_store(
     documents = [build_market_text(m) for m in markets]
     all_embeddings = embeddings
 
-    # Add in chunks to avoid huge single requests
-    add_batch_size = min(500, batch_size * 4)
+    # Add in chunks to avoid huge single requests; use larger chunks for big N
+    add_batch_size = 1000 if len(ids) > 5000 else min(500, batch_size * 4)
     for i in range(0, len(ids), add_batch_size):
         chunk_ids = ids[i : i + add_batch_size]
         chunk_docs = documents[i : i + add_batch_size]

@@ -77,6 +77,12 @@ class Settings(BaseSettings):
         le=10000,
         description="Max clusters to label per run (safety + cost control)",
     )
+    label_parallel_workers: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Number of clusters to label in parallel (LLM calls)",
+    )
     relations_max_clusters: int = Field(
         default=100,
         ge=1,
@@ -101,6 +107,10 @@ class Settings(BaseSettings):
         le=20,
         description="Number of clusters to process in parallel for relation discovery",
     )
+    relations_excluded_clusters_csv: str = Field(
+        default="",
+        description="Comma-separated cluster ids to exclude from relation discovery (e.g. c_21,c_31); set from eval export of worst clusters",
+    )
 
     # Evaluation (compare predicted relations to resolved outcomes)
     eval_min_confidence: float = Field(
@@ -117,7 +127,7 @@ class Settings(BaseSettings):
     # Polymarket / APIs
     polymarket_api_base: str = Field(
         default="https://gamma-api.polymarket.com",
-        description="Polymarket API base URL",
+        description="Polymarket Gamma API base URL",
     )
     polymarket_api_key: str | None = Field(default=None, description="Polymarket API key if required")
 

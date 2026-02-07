@@ -54,16 +54,19 @@ def _confidence_bucket_label(score: float, boundaries: list[float]) -> str:
 
 def run_evaluate_relations(
     database_url: str | None = None,
+    min_confidence_override: float | None = None,
 ) -> EvalResult:
     """
     Compare predicted relations to resolved outcomes.
     Only relations where both markets have resolved_outcome (YES/NO) are evaluable.
     Returns EvalResult with overall accuracy and breakdown by cluster and confidence bucket.
+
+    min_confidence_override: if set, only evaluate relations with confidence >= this (e.g. 0.85).
     """
     configure_logging()
     settings = get_settings()
     db_url = database_url or settings.database_url
-    min_conf = settings.eval_min_confidence
+    min_conf = min_confidence_override if min_confidence_override is not None else settings.eval_min_confidence
     buckets = settings.eval_confidence_buckets or [0.5, 0.7, 0.9]
 
     relations_with_cluster = read_relations(db_url)

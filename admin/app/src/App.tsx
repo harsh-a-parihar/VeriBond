@@ -28,6 +28,8 @@ function App() {
   const [action, setAction] = useState<ActionState>({ loading: false, error: null, lastResult: null });
   const [csvPath, setCsvPath] = useState<string>("polymarket_markets.csv");
   const [nrows, setNrows] = useState<string>("");
+  const [useAllSources, setUseAllSources] = useState<boolean>(true);
+  const [evalMinConfidence, setEvalMinConfidence] = useState<string>("");
   const [datasets, setDatasets] = useState<string[]>([]);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -110,12 +112,18 @@ function App() {
     relations: () =>
       runAction("Relations", () => api("POST", "/pipeline/relations").then((r) => r.data)),
     evaluate: () =>
-      runAction("Evaluate", () => api("POST", "/pipeline/evaluate").then((r) => r.data)),
+      runAction("Evaluate", () => {
+        const n = evalMinConfidence ? parseFloat(evalMinConfidence) : NaN;
+        return api("POST", "/pipeline/evaluate", {
+          min_confidence: !isNaN(n) && n >= 0 && n <= 1 ? n : undefined,
+        }).then((r) => r.data);
+      }),
     runFull: () =>
       runAction("Run full pipeline", () =>
         api("POST", "/pipeline/run-full", {
           csv_path: csvPath || undefined,
           nrows: nrows ? parseInt(nrows, 10) : undefined,
+          use_all_sources: useAllSources,
         }).then((r) => r.data)
       ),
   };
@@ -272,9 +280,26 @@ function App() {
               <button disabled={busy} onClick={pipeline.relations}>
                 Relations
               </button>
-              <button disabled={busy} onClick={pipeline.evaluate}>
-                Evaluate
-              </button>
+              <span style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <button disabled={busy} onClick={pipeline.evaluate}>
+                  Evaluate
+                </button>
+                <input
+                  type="text"
+                  placeholder="Min conf (0=all, 0.85=high)"
+                  value={evalMinConfidence}
+                  onChange={(e) => setEvalMinConfidence(e.target.value)}
+                  style={{ width: "140px", padding: "4px 6px", fontSize: "12px" }}
+                />
+              </span>
+              <label style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "8px", fontSize: "13px" }}>
+                <input
+                  type="checkbox"
+                  checked={useAllSources}
+                  onChange={(e) => setUseAllSources(e.target.checked)}
+                />
+                Use Gamma + CSV (ingest)
+              </label>
               <button
                 className="primary"
                 disabled={busy}

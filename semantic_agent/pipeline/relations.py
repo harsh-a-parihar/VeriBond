@@ -9,6 +9,7 @@ from typing import Any
 
 from semantic_agent.logging_utils import configure_logging
 from semantic_agent.models.market import Cluster, Market, MarketRelation, MarketRelationList
+from semantic_agent.utils import retry_llm
 
 logger = logging.getLogger(__name__)
 
@@ -41,85 +42,146 @@ def discover_relations_for_cluster(
         client_kw["base_url"] = openai_api_base.rstrip("/")
     client = OpenAI(**client_kw)
 
-    # Build compact description of markets in this cluster
+    # Build compact description of markets in this cluster (numbered for reference)
     lines: list[str] = []
-    for m in markets:
+    for i, m in enumerate(markets, 1):
         outcome = m.resolved_outcome or "UNKNOWN"
-        lines.append(f"- [{m.id}] ({outcome}) {m.question}")
-    markets_block = "\n".join(lines)
+        lines.append(f"{i}.\nmarket_id: {m.id}\nquestion: \"{m.question}\"\nresolved_outcome: {outcome}")
+    markets_block = "\n\n".join(lines)
 
     system = (
-        "You analyze prediction market questions and find pairs whose outcomes "
-        "are semantically related. You must follow the JSON schema exactly."
+        "You are an expert analyst of prediction markets.\n"
+        "Your task is to identify ONLY verifiable, real-world outcome dependencies between markets.\n\n"
+        "You must be conservative. If there is no clear causal, logical, or real-world link, output NO_RELATION.\n"
+        "Do not guess. Do not assume correlation implies causation.\n"
+        "You must follow the JSON schema exactly."
     )
 
-    taxonomy_line = f"Cluster category hint: {taxonomy_hint}.\n" if taxonomy_hint else ""
+    taxonomy_line = f"Cluster category hint: {taxonomy_hint}.\n\n" if taxonomy_hint else ""
 
     user = (
         taxonomy_line
-        + "Each line below is a market in the same topical cluster:\n"
-        + markets_block
-        + "\n\n"
-        "Your task:\n"
-        f"- Propose up to {max_relations} pairs of markets whose outcomes are related.\n"
-        "- For each pair, decide if they tend to resolve to the SAME outcome (both YES/YES or NO/NO)\n"
-        "  or to OPPOSITE outcomes (one YES, one NO).\n"
-        "- Use a confidence score in [0,1].\n\n"
-        "Return a JSON object with key 'relations' that matches this schema:\n"
+        + "You are given a list of prediction markets from the same topical cluster.\n\n"
+        "Your task is to identify pairs of markets whose outcomes are clearly dependent in the real world.\n\n"
+        "For each pair, determine:\n"
+        "1) SAME_OUTCOME: If market A resolves YES, market B is very likely to resolve YES (and same for NO/NO).\n"
+        "2) OPPOSITE_OUTCOME: If market A resolves YES, market B is very likely to resolve NO (and vice versa).\n"
+        "3) NO_RELATION: No clear, verifiable dependency exists. Output this when uncertain.\n\n"
+        "Only output SAME_OUTCOME or OPPOSITE_OUTCOME if you can identify a specific shared real-world event, "
+        "rule, or mechanism that links both markets. If you cannot, choose NO_RELATION.\n\n"
+        "For every non-NO_RELATION decision you must: (1) Name the shared real-world event; "
+        "(2) Explain how it affects both markets; (3) Explain why the relationship is reliable.\n\n"
+        "Confidence calibration: 0.90-1.00 = almost deterministic; 0.75-0.89 = strong causal link; "
+        "0.60-0.74 = moderate but defensible. If confidence would be < 0.60, output NO_RELATION instead.\n\n"
+        "Return ONLY valid JSON in this format:\n"
         "{\n"
-        '  \"relations\": [\n'
+        '  "relations": [\n'
         "    {\n"
-        '      \"market_id_i\": \"...\",\n'
-        '      \"market_id_j\": \"...\",\n'
-        '      \"question_i\": \"...\",   // verbatim question text for i\n'
-        '      \"question_j\": \"...\",   // verbatim question text for j\n'
-        '      \"is_same_outcome\": true, // true = SAME (YES/YES or NO/NO), false = OPPOSITE\n'
-        '      \"confidence_score\": 0.0, // float in [0,1]\n'
-        '      \"rationale\": \"...\"     // short reason\n'
+        '      "market_id_i": "...",\n'
+        '      "market_id_j": "...",\n'
+        '      "relation_type": "SAME_OUTCOME | OPPOSITE_OUTCOME | NO_RELATION",\n'
+        '      "confidence": 0.00,\n'
+        '      "shared_event": "...",\n'
+        '      "rationale": "..."\n'
         "    }\n"
         "  ]\n"
-        "}\n"
+        "}\n\n"
+        "Here are the markets:\n\n"
+        + markets_block
     )
 
-    try:
-        resp = client.chat.completions.create(
-            model=openai_model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-    except TypeError:
-        resp = client.chat.completions.create(
-            model=openai_model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0,
-        )
+    def _create():
+        try:
+            return client.chat.completions.create(
+                model=openai_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+        except TypeError:
+            return client.chat.completions.create(
+                model=openai_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0,
+            )
 
+    resp = retry_llm(_create, max_retries=3, base_delay=1.0)
     content = (resp.choices[0].message.content or "").strip()
 
-    # Parse into MarketRelationList
     data = _safe_json_loads(content)
     if not isinstance(data, dict):
         logger.warning("Cluster %s: invalid JSON from LLM; skipping", cluster.cluster_id)
         return []
 
-    try:
-        mr_list = MarketRelationList.model_validate(data)
-    except Exception as exc:  # pydantic validation error
-        logger.warning("Cluster %s: failed to validate MarketRelationList: %s", cluster.cluster_id, exc)
-        return []
+    id_to_question = {m.id: (m.question or "").strip() or m.id for m in markets}
+    raw_relations = data.get("relations") or []
+    out: list[MarketRelation] = []
 
-    # Optionally trim to max_relations
-    if len(mr_list.relations) > max_relations:
-        mr_list.relations = mr_list.relations[:max_relations]
+    for rel in raw_relations:
+        if not isinstance(rel, dict):
+            continue
+        mid_i = (rel.get("market_id_i") or "").strip()
+        mid_j = (rel.get("market_id_j") or "").strip()
+        if not mid_i or not mid_j or mid_i == mid_j:
+            continue
+        if mid_i not in id_to_question or mid_j not in id_to_question:
+            continue
 
-    return mr_list.relations
+        # New format: relation_type + confidence + shared_event
+        relation_type = (rel.get("relation_type") or "").strip().upper()
+        confidence = rel.get("confidence")
+        if confidence is not None:
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 0.0
+        else:
+            confidence = rel.get("confidence_score", 0.0)
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 0.0
+
+        if relation_type == "NO_RELATION" or confidence < 0.6:
+            continue
+        if relation_type not in ("SAME_OUTCOME", "OPPOSITE_OUTCOME"):
+            # Fallback: old format with is_same_outcome
+            same = rel.get("is_same_outcome")
+            if same is None:
+                continue
+            relation_type = "SAME_OUTCOME" if same else "OPPOSITE_OUTCOME"
+
+        is_same_outcome = relation_type == "SAME_OUTCOME"
+        rationale = (rel.get("rationale") or "").strip() or ""
+        shared_event = (rel.get("shared_event") or "").strip() or None
+        if not shared_event:
+            shared_event = None
+
+        question_i = (rel.get("question_i") or "").strip() or id_to_question.get(mid_i, mid_i)
+        question_j = (rel.get("question_j") or "").strip() or id_to_question.get(mid_j, mid_j)
+
+        out.append(
+            MarketRelation(
+                market_id_i=mid_i,
+                market_id_j=mid_j,
+                question_i=question_i,
+                question_j=question_j,
+                is_same_outcome=is_same_outcome,
+                confidence_score=min(1.0, max(0.0, confidence)),
+                rationale=rationale,
+                shared_event=shared_event,
+            )
+        )
+
+    if len(out) > max_relations:
+        out = out[:max_relations]
+    return out
 
 
 def _process_one_cluster(
@@ -218,6 +280,13 @@ def run_discover_relations(
         skipped = before - len(clusters)
         if skipped:
             logger.info("Skipping %d clusters that already have relations", skipped)
+
+    excluded_csv = getattr(settings, "relations_excluded_clusters_csv", "") or ""
+    excluded_ids = [x.strip() for x in excluded_csv.split(",") if x.strip()]
+    if excluded_ids:
+        before = len(clusters)
+        clusters = [c for c in clusters if c.cluster_id not in excluded_ids]
+        logger.info("Excluded %d clusters by config (relations_excluded_clusters_csv): %s", before - len(clusters), excluded_ids[:10])
 
     clusters = clusters[:max_clusters]
 
