@@ -8,6 +8,7 @@ import {
     type GetConfigResponse,
     type PingResponse,
 } from '@erc7824/nitrolite';
+import { getYellowWsUrlOrDefault } from '@/lib/yellowConfig';
 
 type RpcResponse = ReturnType<typeof parseAnyRPCResponse>;
 
@@ -31,7 +32,6 @@ export type YellowRailSnapshot = {
     error?: string;
 };
 
-const DEFAULT_YELLOW_WS_URL = 'wss://clearnet.yellow.com/ws';
 const REQUEST_TIMEOUT_MS = Math.max(1000, Number(process.env.YELLOW_RPC_TIMEOUT_MS ?? '5000'));
 const CACHE_TTL_MS = Math.max(5000, Number(process.env.YELLOW_STATUS_CACHE_MS ?? '30000'));
 
@@ -39,7 +39,7 @@ let cachedSnapshot: YellowRailSnapshot | null = null;
 let cachedAtMs = 0;
 
 function getYellowWsUrl(): string | null {
-    const raw = process.env.YELLOW_WS_URL?.trim() || DEFAULT_YELLOW_WS_URL;
+    const raw = getYellowWsUrlOrDefault();
     if (!raw) return null;
     try {
         const url = new URL(raw);

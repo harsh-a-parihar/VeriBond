@@ -13,6 +13,7 @@ import {
 import { isAllowedChatEndpointUrl } from '@/lib/chatEndpointSecurity';
 import { getYellowRailSnapshot } from '@/lib/yellowRail';
 import { initializeYellowAppSession } from '@/lib/yellowSession';
+import { getYellowChainIdOrDefault } from '@/lib/yellowConfig';
 
 type SessionAuthRequest = {
     signatureType?: ChatSignatureType;
@@ -231,7 +232,7 @@ export async function POST(request: Request) {
 
         const messages = await listChatMessages(session.id, 100);
         const earnings = await getAgentEarnings(session.agentId, session.agentRecipient);
-        const yellow = await getYellowRailSnapshot(84532);
+        const yellow = await getYellowRailSnapshot(getYellowChainIdOrDefault());
 
         return NextResponse.json({
             session,

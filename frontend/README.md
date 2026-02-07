@@ -1,5 +1,21 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Yellow Sandbox Mode
+
+The chat rail is configured for Yellow Nitrolite sandbox by default:
+
+- `YELLOW_WS_URL=wss://clearnet-sandbox.yellow.com/ws`
+- `YELLOW_CHAIN_ID=11155111` (Ethereum Sepolia)
+- `YELLOW_APP_ASSET=ytest.usd` (override with your funded sandbox asset if needed)
+- `YELLOW_OPERATOR_PRIVATE_KEY=<your sandbox operator key>`
+- `YELLOW_SIGNER_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com`
+
+Important:
+
+1. You must create and fund a sandbox channel for `YELLOW_OPERATOR_PRIVATE_KEY`.
+2. If auth/session creation fails with unsupported token errors, set `YELLOW_APP_ASSET` to a token that is funded/allowed for that channel.
+3. Chat signing default chain fallback is `NEXT_PUBLIC_CHAT_AUTH_CHAIN_ID=11155111`.
+
 ## Getting Started
 
 First, run the development server:

@@ -4,6 +4,8 @@ import {
     createAuthVerifyMessageFromChallenge,
     createCloseAppSessionMessage,
     createECDSAMessageSigner,
+    createEIP712AuthMessageSigner,
+    createGetAssetsMessageV2,
     createSubmitAppStateMessage,
     parseAnyRPCResponse,
     RPCAppStateIntent,
@@ -12,8 +14,9 @@ import {
     type CreateAppSessionResponse,
     type SubmitAppStateResponse,
 } from '@erc7824/nitrolite';
-import { isAddress, type Address, type Hex } from 'viem';
+import { createWalletClient, http, isAddress, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { getYellowAssetOrDefault, getYellowChainIdOrDefault, getYellowWsUrlOrDefault } from '@/lib/yellowConfig';
 
 type RpcResponse = ReturnType<typeof parseAnyRPCResponse>;
 
@@ -38,15 +41,25 @@ export type YellowSettlementResult = {
     error?: string;
 };
 
-const DEFAULT_YELLOW_WS_URL = 'wss://clearnet.yellow.com/ws';
 const DEFAULT_APPLICATION = 'veribond-agent-chat';
 const DEFAULT_SCOPE = 'veribond:chat';
-const DEFAULT_ASSET = 'USDC';
 const REQUEST_TIMEOUT_MS = Math.max(1200, Number(process.env.YELLOW_RPC_TIMEOUT_MS ?? '6000'));
 const DEFAULT_CHALLENGE_SECONDS = Math.max(60, Number(process.env.YELLOW_APP_CHALLENGE_SECONDS ?? '3600'));
+const DEFAULT_APP_QUORUM = Math.max(1, Math.min(2, Number(process.env.YELLOW_APP_QUORUM ?? '1')));
+const ASSET_DISCOVERY_LIMIT = Math.max(1, Number(process.env.YELLOW_ASSET_DISCOVERY_LIMIT ?? '120'));
+const YELLOW_DEBUG = process.env.YELLOW_DEBUG === '1';
+
+function logYellow(message: string, details?: unknown): void {
+    if (!YELLOW_DEBUG) return;
+    if (details === undefined) {
+        console.log(`[YellowSession] ${message}`);
+        return;
+    }
+    console.log(`[YellowSession] ${message}`, details);
+}
 
 function getYellowWsUrl(): string | null {
-    const raw = process.env.YELLOW_WS_URL?.trim() || DEFAULT_YELLOW_WS_URL;
+    const raw = getYellowWsUrlOrDefault();
     if (!raw) return null;
     try {
         const parsed = new URL(raw);
@@ -170,48 +183,165 @@ async function sendRpc(ws: WebSocket, requestMessage: string): Promise<RpcRespon
     });
 }
 
+function isUnsupportedTokenError(error: unknown): boolean {
+    return error instanceof Error && error.message.toLowerCase().includes('unsupported token');
+}
+
+function extractAssetCandidates(response: RpcResponse): string[] {
+    if (response.method !== RPCMethod.GetAssets && response.method !== RPCMethod.Assets) {
+        return [];
+    }
+
+    return Array.from(
+        new Set(
+            (
+                (response.params as { assets?: Array<{ token?: string; symbol?: string }> }).assets
+                    ?.flatMap((entry) => {
+                        const out: string[] = [];
+                        if (entry.token) out.push(entry.token);
+                        if (entry.symbol) {
+                            out.push(entry.symbol);
+                            out.push(entry.symbol.toLowerCase());
+                            out.push(entry.symbol.toUpperCase());
+                        }
+                        return out;
+                    }) ?? []
+            )
+                .filter((value) => !!value)
+                .slice(0, ASSET_DISCOVERY_LIMIT),
+        ),
+    );
+}
+
+async function fetchChainAssetsResponse(ws: WebSocket): Promise<RpcResponse> {
+    return await sendRpc(ws, createGetAssetsMessageV2(getYellowChainIdOrDefault()));
+}
+
+function isHexAddress(value: string): boolean {
+    return /^0x[0-9a-fA-F]{40}$/.test(value.trim());
+}
+
+async function resolveSettlementAsset(ws: WebSocket, authAsset: string): Promise<string> {
+    if (isHexAddress(authAsset)) return authAsset;
+
+    const response = await fetchChainAssetsResponse(ws);
+    if (response.method !== RPCMethod.GetAssets && response.method !== RPCMethod.Assets) {
+        return authAsset;
+    }
+
+    const normalized = authAsset.trim().toLowerCase();
+    const assets = (response.params as { assets?: Array<{ token?: string; symbol?: string }> }).assets ?? [];
+    const match = assets.find((entry) => (entry.symbol ?? '').trim().toLowerCase() === normalized);
+    if (match?.token && isHexAddress(match.token)) {
+        return match.token;
+    }
+
+    return authAsset;
+}
+
 async function authenticate(ws: WebSocket, operatorPrivateKey: Hex, application: string, scope: string, asset: string): Promise<{
     operatorAddress: Address;
+    authAsset: string;
+    settlementAsset: string;
 }> {
     const account = privateKeyToAccount(operatorPrivateKey);
-    const signer = createECDSAMessageSigner(operatorPrivateKey);
-
-    const authRequest = await createAuthRequestMessage({
-        address: account.address,
-        session_key: account.address,
-        application,
-        allowances: [{ asset, amount: `${2 ** 31}` }],
-        expires_at: BigInt(Date.now() + (2 * 60 * 60 * 1000)),
-        scope,
+    const signerRpcUrl = process.env.YELLOW_SIGNER_RPC_URL?.trim() || process.env.NEXT_PUBLIC_RPC_URL?.trim() || 'https://sepolia.base.org';
+    const walletClient = createWalletClient({
+        account,
+        transport: http(signerRpcUrl),
     });
-    const authChallenge = await sendRpc(ws, authRequest);
-    if (authChallenge.method !== RPCMethod.AuthRequest && authChallenge.method !== RPCMethod.AuthChallenge) {
-        throw new Error(`Unexpected auth challenge method: ${authChallenge.method}`);
-    }
+    const expiresAt = BigInt(Math.floor(Date.now() / 1000) + (2 * 60 * 60));
+    const allowanceAmount = `${2 ** 31}`;
 
-    const challengeMessage = (
-        authChallenge.params as { challengeMessage?: string; challenge_message?: string }
-    ).challengeMessage
-        ?? (authChallenge.params as { challenge_message?: string }).challenge_message;
-    if (!challengeMessage) {
-        throw new Error('Yellow auth challenge missing challenge message');
-    }
+    const requestAuthChallenge = async (candidateAsset: string): Promise<RpcResponse> => {
+        const authRequest = await createAuthRequestMessage({
+            address: account.address,
+            session_key: account.address,
+            application,
+            allowances: [{ asset: candidateAsset, amount: allowanceAmount }],
+            expires_at: expiresAt,
+            scope,
+        });
+        return await sendRpc(ws, authRequest);
+    };
 
-    const authVerify = await createAuthVerifyMessageFromChallenge(signer, challengeMessage);
-    const authVerified = await sendRpc(ws, authVerify);
-    if (authVerified.method !== RPCMethod.AuthVerify) {
-        throw new Error(`Unexpected auth verify method: ${authVerified.method}`);
-    }
-    const success = Boolean((authVerified.params as { success?: boolean }).success);
-    if (!success) {
-        throw new Error('Yellow auth verify failed');
-    }
+    const domainName = process.env.YELLOW_EIP712_DOMAIN_NAME?.trim() || application;
+    const runFullAuth = async (candidateAsset: string): Promise<void> => {
+        const allowances = [{ asset: candidateAsset, amount: allowanceAmount }];
+        const authChallenge = await requestAuthChallenge(candidateAsset);
+        if (authChallenge.method !== RPCMethod.AuthRequest && authChallenge.method !== RPCMethod.AuthChallenge) {
+            throw new Error(`Unexpected auth challenge method: ${authChallenge.method}`);
+        }
 
-    return { operatorAddress: account.address };
+        const challengeMessage = (
+            authChallenge.params as { challengeMessage?: string; challenge_message?: string }
+        ).challengeMessage
+            ?? (authChallenge.params as { challenge_message?: string }).challenge_message;
+        if (!challengeMessage) {
+            throw new Error('Yellow auth challenge missing challenge message');
+        }
+
+        const authSigner = createEIP712AuthMessageSigner(
+            walletClient,
+            {
+                scope,
+                session_key: account.address,
+                expires_at: expiresAt,
+                allowances,
+            },
+            { name: domainName },
+        );
+        const authVerify = await createAuthVerifyMessageFromChallenge(authSigner, challengeMessage);
+        const authVerified = await sendRpc(ws, authVerify);
+        if (authVerified.method !== RPCMethod.AuthVerify) {
+            throw new Error(`Unexpected auth verify method: ${authVerified.method}`);
+        }
+        const success = Boolean((authVerified.params as { success?: boolean }).success);
+        if (!success) {
+            throw new Error('Yellow auth verify failed');
+        }
+    };
+
+    let selectedAsset = asset;
+    try {
+        await runFullAuth(selectedAsset);
+        return {
+            operatorAddress: account.address,
+            authAsset: selectedAsset,
+            settlementAsset: await resolveSettlementAsset(ws, selectedAsset),
+        };
+    } catch (error) {
+        if (!isUnsupportedTokenError(error)) throw error;
+        logYellow('Configured asset unsupported, starting discovery', { configuredAsset: selectedAsset });
+
+        const assetsResponse = await fetchChainAssetsResponse(ws);
+        const discoveredAssets = extractAssetCandidates(assetsResponse);
+        logYellow('Candidate assets loaded for discovery', { count: discoveredAssets.length });
+
+        for (const candidate of discoveredAssets) {
+            try {
+                await runFullAuth(candidate);
+                selectedAsset = candidate;
+                logYellow('Discovered supported asset', { selectedAsset });
+                return {
+                    operatorAddress: account.address,
+                    authAsset: selectedAsset,
+                    settlementAsset: await resolveSettlementAsset(ws, selectedAsset),
+                };
+            } catch (candidateError) {
+                if (!isUnsupportedTokenError(candidateError)) throw candidateError;
+            }
+        }
+
+        throw new Error(
+            `Yellow operator has no supported auth asset (configured=${asset}, tested=${discoveredAssets.length}). `
+            + 'Create/fund a Yellow channel and set YELLOW_APP_ASSET to a supported token address.',
+        );
+    }
 }
 
 function getAssetName(): string {
-    return process.env.YELLOW_APP_ASSET?.trim() || DEFAULT_ASSET;
+    return getYellowAssetOrDefault();
 }
 
 function getApplicationName(): string {
@@ -259,31 +389,76 @@ export async function initializeYellowAppSession(params: {
         const application = getApplicationName();
         const asset = getAssetName();
         const scope = getScope(params.sessionId);
-        const { operatorAddress } = await authenticate(ws, operatorPrivateKey, application, scope, asset);
+        let {
+            operatorAddress,
+            authAsset: resolvedAuthAsset,
+            settlementAsset: resolvedSettlementAsset,
+        } = await authenticate(ws, operatorPrivateKey, application, scope, asset);
         const signer = createECDSAMessageSigner(operatorPrivateKey);
 
-        const createMessage = await createAppSessionMessage(signer, {
-            definition: {
-                application,
-                protocol: RPCProtocolVersion.NitroRPC_0_4,
-                participants: [operatorAddress, params.agentRecipient],
-                weights: [1, 1],
-                quorum: 2,
-                challenge: DEFAULT_CHALLENGE_SECONDS,
-                nonce: Date.now(),
-            },
-            allocations: [
-                { participant: operatorAddress, asset, amount: '0' },
-                { participant: params.agentRecipient, asset, amount: '0' },
-            ],
-            session_data: JSON.stringify({
-                sessionId: params.sessionId,
-                payer: params.payer,
-                recipient: params.agentRecipient,
-            }),
-        });
+        const createWithAsset = async (assetForSession: string): Promise<CreateAppSessionResponse> => {
+            const createMessage = await createAppSessionMessage(signer, {
+                definition: {
+                    application,
+                    protocol: RPCProtocolVersion.NitroRPC_0_4,
+                    participants: [operatorAddress, params.agentRecipient],
+                    weights: [1, 1],
+                    quorum: DEFAULT_APP_QUORUM,
+                    challenge: DEFAULT_CHALLENGE_SECONDS,
+                    nonce: Date.now(),
+                },
+                allocations: [
+                    { participant: operatorAddress, asset: assetForSession, amount: '0' },
+                    { participant: params.agentRecipient, asset: assetForSession, amount: '0' },
+                ],
+                session_data: JSON.stringify({
+                    sessionId: params.sessionId,
+                    payer: params.payer,
+                    recipient: params.agentRecipient,
+                }),
+            });
+            return await sendRpc(ws, createMessage) as CreateAppSessionResponse;
+        };
 
-        const created = await sendRpc(ws, createMessage) as CreateAppSessionResponse;
+        let created: CreateAppSessionResponse;
+        try {
+            created = await createWithAsset(resolvedSettlementAsset);
+        } catch (error) {
+            if (!isUnsupportedTokenError(error)) throw error;
+            logYellow('Create app session failed for asset, retrying discovery', { asset: resolvedSettlementAsset });
+
+            const assetsResponse = await fetchChainAssetsResponse(ws);
+            const candidateAssets = extractAssetCandidates(assetsResponse)
+                .filter((candidate) => candidate !== resolvedAuthAsset);
+            logYellow('Create app session fallback candidates', { count: candidateAssets.length });
+
+            let createdFallback: CreateAppSessionResponse | null = null;
+            for (const candidate of candidateAssets) {
+                try {
+                    const authResult = await authenticate(ws, operatorPrivateKey, application, scope, candidate);
+                    operatorAddress = authResult.operatorAddress;
+                    resolvedAuthAsset = authResult.authAsset;
+                    resolvedSettlementAsset = authResult.settlementAsset;
+                    createdFallback = await createWithAsset(resolvedSettlementAsset);
+                    logYellow('Create app session fallback selected asset', {
+                        authAsset: resolvedAuthAsset,
+                        settlementAsset: resolvedSettlementAsset,
+                    });
+                    break;
+                } catch (candidateError) {
+                    if (!isUnsupportedTokenError(candidateError)) throw candidateError;
+                }
+            }
+
+            if (!createdFallback) {
+                throw new Error(
+                    `Yellow app session creation failed for all candidate assets (configured=${asset}, tested=${candidateAssets.length}). `
+                    + 'Verify channel balances/asset support for YELLOW_OPERATOR_PRIVATE_KEY.',
+                );
+            }
+            created = createdFallback;
+        }
+
         if (created.method !== RPCMethod.CreateAppSession) {
             return {
                 enabled: true,
@@ -297,7 +472,7 @@ export async function initializeYellowAppSession(params: {
             created: true,
             appSessionId: created.params.appSessionId,
             protocol: RPCProtocolVersion.NitroRPC_0_4,
-            asset,
+            asset: resolvedAuthAsset,
             version: created.params.version,
             status: created.params.status,
             operatorAddress,
@@ -323,6 +498,7 @@ export async function submitYellowUsage(params: {
     currentVersion: number;
     agentRecipient: Address;
     settledMicroUsdc: string;
+    totalSettledMicroUsdc?: string;
     asset?: string | null;
 }): Promise<YellowSettlementResult> {
     const wsUrl = getYellowWsUrl();
@@ -336,32 +512,61 @@ export async function submitYellowUsage(params: {
         const application = getApplicationName();
         const asset = params.asset?.trim() || getAssetName();
         const scope = getScope(params.sessionId);
-        const { operatorAddress } = await authenticate(ws, operatorPrivateKey, application, scope, asset);
+        const { operatorAddress, settlementAsset } = await authenticate(ws, operatorPrivateKey, application, scope, asset);
         const signer = createECDSAMessageSigner(operatorPrivateKey);
 
-        const amount = BigInt(params.settledMicroUsdc || '0');
-        if (amount <= BigInt(0)) {
+        const settledDelta = BigInt(params.settledMicroUsdc || '0');
+        if (settledDelta <= BigInt(0)) {
             return { enabled: true, ok: true, appSessionId: params.appSessionId, version: params.currentVersion, status: 'noop' };
         }
 
-        const message = await createSubmitAppStateMessage(signer, {
+        const totalSettled = BigInt(params.totalSettledMicroUsdc ?? params.settledMicroUsdc ?? '0');
+        const previousRecipient = totalSettled > settledDelta ? (totalSettled - settledDelta) : BigInt(0);
+
+        // Step 1: move newly-settled amount into app balances.
+        const depositMessage = await createSubmitAppStateMessage(signer, {
             app_session_id: params.appSessionId,
-            intent: RPCAppStateIntent.Operate,
+            intent: RPCAppStateIntent.Deposit,
             version: params.currentVersion + 1,
             allocations: [
-                { participant: operatorAddress, asset, amount: '0' },
-                { participant: params.agentRecipient, asset, amount: amount.toString() },
+                { participant: operatorAddress, asset: settlementAsset, amount: settledDelta.toString() },
+                { participant: params.agentRecipient, asset: settlementAsset, amount: previousRecipient.toString() },
             ],
             session_data: JSON.stringify({
                 sessionId: params.sessionId,
-                settledMicroUsdc: amount.toString(),
+                settledMicroUsdc: settledDelta.toString(),
+                totalSettledMicroUsdc: totalSettled.toString(),
+                stage: 'deposit',
                 submittedAt: Date.now(),
             }),
         });
 
-        const response = await sendRpc(ws, message) as SubmitAppStateResponse;
+        const depositResponse = await sendRpc(ws, depositMessage) as SubmitAppStateResponse;
+        if (depositResponse.method !== RPCMethod.SubmitAppState) {
+            return { enabled: true, ok: false, error: `Unexpected deposit response: ${depositResponse.method}` };
+        }
+
+        // Step 2: attribute deposited amount to recipient.
+        const operateMessage = await createSubmitAppStateMessage(signer, {
+            app_session_id: params.appSessionId,
+            intent: RPCAppStateIntent.Operate,
+            version: depositResponse.params.version + 1,
+            allocations: [
+                { participant: operatorAddress, asset: settlementAsset, amount: '0' },
+                { participant: params.agentRecipient, asset: settlementAsset, amount: totalSettled.toString() },
+            ],
+            session_data: JSON.stringify({
+                sessionId: params.sessionId,
+                settledMicroUsdc: settledDelta.toString(),
+                totalSettledMicroUsdc: totalSettled.toString(),
+                stage: 'operate',
+                submittedAt: Date.now(),
+            }),
+        });
+
+        const response = await sendRpc(ws, operateMessage) as SubmitAppStateResponse;
         if (response.method !== RPCMethod.SubmitAppState) {
-            return { enabled: true, ok: false, error: `Unexpected submit response: ${response.method}` };
+            return { enabled: true, ok: false, error: `Unexpected operate response: ${response.method}` };
         }
 
         return {
@@ -404,14 +609,14 @@ export async function closeYellowAppSession(params: {
         const application = getApplicationName();
         const asset = params.asset?.trim() || getAssetName();
         const scope = getScope(params.sessionId);
-        const { operatorAddress } = await authenticate(ws, operatorPrivateKey, application, scope, asset);
+        const { operatorAddress, settlementAsset } = await authenticate(ws, operatorPrivateKey, application, scope, asset);
         const signer = createECDSAMessageSigner(operatorPrivateKey);
 
         const message = await createCloseAppSessionMessage(signer, {
             app_session_id: params.appSessionId,
             allocations: [
-                { participant: operatorAddress, asset, amount: '0' },
-                { participant: params.agentRecipient, asset, amount: '0' },
+                { participant: operatorAddress, asset: settlementAsset, amount: '0' },
+                { participant: params.agentRecipient, asset: settlementAsset, amount: '0' },
             ],
             session_data: JSON.stringify({
                 sessionId: params.sessionId,

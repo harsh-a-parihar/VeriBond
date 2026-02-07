@@ -75,25 +75,68 @@ const syncIndexer = async () => {
 // --- SUB-COMPONENTS ---
 // ... (TrustGraph, AgentCard components - keeping these as is) [REDACTED FOR BREVITY, ASSUMING THEY ARE ABLE TO BE KEPT OR I WILL INCLUDE THEM IF NEEDED. ACTUALLY I SHOULD PROBABLY INCLUDE THEM TO BE SAFE OR TARGET CAREFULLY]
 
-// 1. The Sparkline (Visual Trust Signal)
-const TrustGraph = ({ status }: { status: AgentStatus }) => {
-    const color = status === 'slashed' ? '#ef4444' : status === 'auction' ? '#3b82f6' : '#14b8a6';
-    const points = status === 'slashed'
-        ? [80, 82, 85, 84, 40, 35, 30]
-        : [20, 25, 22, 30, 35, 38, 45];
+// 1. Trust Score Badge (Replaces Sparkline)
+const TrustScoreBadge = ({ accuracy, status }: { accuracy: number; status: AgentStatus }) => {
+    const isSlashed = status === 'slashed';
+    const isAuction = status === 'auction';
+
+    // Color based on trust score
+    const getColor = () => {
+        if (isSlashed) return { bg: 'bg-red-900/20', border: 'border-red-700/40', text: 'text-red-400', ring: 'stroke-red-500' };
+        if (isAuction) return { bg: 'bg-blue-900/20', border: 'border-blue-700/40', text: 'text-blue-400', ring: 'stroke-blue-500' };
+        if (accuracy >= 80) return { bg: 'bg-green-900/20', border: 'border-green-700/40', text: 'text-green-400', ring: 'stroke-green-500' };
+        if (accuracy >= 50) return { bg: 'bg-yellow-900/20', border: 'border-yellow-700/40', text: 'text-yellow-400', ring: 'stroke-yellow-500' };
+        return { bg: 'bg-red-900/20', border: 'border-red-700/40', text: 'text-red-400', ring: 'stroke-red-500' };
+    };
+
+    const colors = getColor();
+    const circumference = 2 * Math.PI * 16; // radius = 16
+    const offset = circumference - (accuracy / 100) * circumference;
 
     return (
-        <div className="h-8 w-24">
-            <svg className="w-full h-full overflow-visible" preserveAspectRatio="none">
-                <polyline
-                    points={points.map((p, i) => `${(i / (points.length - 1)) * 100},${100 - p}`).join(' ')}
-                    fill="none"
-                    stroke={color}
-                    strokeWidth="2"
-                    vectorEffect="non-scaling-stroke"
-                    strokeLinecap="round"
-                />
-            </svg>
+        <div className="flex items-center gap-3">
+            {/* Circular Progress */}
+            <div className="relative w-12 h-12">
+                <svg className="w-full h-full -rotate-90">
+                    {/* Background circle */}
+                    <circle
+                        cx="24"
+                        cy="24"
+                        r="16"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        fill="none"
+                        className="text-zinc-800"
+                    />
+                    {/* Progress circle */}
+                    <circle
+                        cx="24"
+                        cy="24"
+                        r="16"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        fill="none"
+                        strokeDasharray={circumference}
+                        strokeDashoffset={offset}
+                        strokeLinecap="round"
+                        className={colors.ring}
+                    />
+                </svg>
+                {/* Center text */}
+                <div className="absolute inset-0 flex items-center justify-center">
+                    <span className={`text-xs font-bold ${colors.text}`}>
+                        {accuracy}
+                    </span>
+                </div>
+            </div>
+
+            {/* Status label */}
+            <div className="flex flex-col">
+                <span className="text-[9px] text-zinc-600 uppercase tracking-wider">Trust Score</span>
+                <span className={`text-xs font-medium ${colors.text}`}>
+                    {isSlashed ? 'Slashed' : isAuction ? 'In Auction' : accuracy >= 80 ? 'Verified' : accuracy >= 50 ? 'Active' : 'Low Trust'}
+                </span>
+            </div>
         </div>
     );
 };
@@ -165,9 +208,9 @@ const AgentCard = ({ agent }: { agent: Agent }) => {
                     )}
                 </div>
 
-                {/* Right: Price & Graph */}
+                {/* Right: Trust Badge & Price */}
                 <div className="w-[35%] flex items-center justify-end gap-6">
-                    <TrustGraph status={agent.status} />
+                    <TrustScoreBadge accuracy={agent.accuracy} status={agent.status} />
                     <div className="text-right min-w-[60px]">
                         <div className="text-sm font-mono text-zinc-200">${agent.price.toFixed(2)}</div>
                         <div className={`text-[10px] font-mono ${agent.change >= 0 ? 'text-teal-500' : 'text-red-500'}`}>
@@ -351,6 +394,94 @@ export default function VeriBondMarketplaceFinal() {
                         </button>
                     </div>
                 </header>
+
+                {/* TOP PERFORMERS SECTION */}
+                {agents.length > 0 && (
+                    <div className="px-6 py-5 border-b border-white/5 bg-gradient-to-r from-zinc-900/50 via-purple-950/10 to-zinc-900/50">
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-2">
+                                <span className="text-lg">🏆</span>
+                                <h2 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">Top Performers</h2>
+                            </div>
+                            <span className="text-[10px] text-zinc-500 font-mono">By Trust Score</span>
+                        </div>
+                        <div className="flex gap-3 overflow-x-auto pb-1">
+                            {[...agents]
+                                .sort((a, b) => b.accuracy - a.accuracy)
+                                .slice(0, 5)
+                                .map((agent, index) => (
+                                    <Link
+                                        key={agent.id}
+                                        href={`/agents/${agent.id}`}
+                                        className={`
+                                            group flex-shrink-0 p-4 rounded-xl border transition-all duration-200 cursor-pointer
+                                            ${index === 0
+                                                ? 'bg-gradient-to-br from-yellow-900/20 via-amber-900/10 to-yellow-950/20 border-yellow-700/30 hover:border-yellow-600/50 shadow-lg shadow-yellow-900/10'
+                                                : index === 1
+                                                    ? 'bg-gradient-to-br from-zinc-700/20 via-zinc-800/10 to-zinc-700/20 border-zinc-500/30 hover:border-zinc-400/50'
+                                                    : index === 2
+                                                        ? 'bg-gradient-to-br from-amber-800/20 via-amber-900/10 to-amber-950/20 border-amber-700/30 hover:border-amber-600/50'
+                                                        : 'bg-zinc-900/50 border-white/5 hover:border-white/10'
+                                            }
+                                        `}
+                                        style={{ minWidth: '160px' }}
+                                    >
+                                        {/* Rank Badge */}
+                                        <div className="flex items-center justify-between mb-3">
+                                            <span className={`
+                                                text-xl font-bold
+                                                ${index === 0 ? 'text-yellow-400' : index === 1 ? 'text-zinc-400' : index === 2 ? 'text-amber-500' : 'text-zinc-500'}
+                                            `}>
+                                                #{index + 1}
+                                            </span>
+                                            <span className={`
+                                                text-xs font-bold px-2 py-0.5 rounded-full
+                                                ${agent.accuracy >= 80
+                                                    ? 'bg-green-900/30 text-green-400 border border-green-800/50'
+                                                    : agent.accuracy >= 50
+                                                        ? 'bg-yellow-900/30 text-yellow-400 border border-yellow-800/50'
+                                                        : 'bg-red-900/30 text-red-400 border border-red-800/50'
+                                                }
+                                            `}>
+                                                {agent.accuracy}
+                                            </span>
+                                        </div>
+
+                                        {/* Agent Info */}
+                                        <div className="flex items-center gap-2 mb-2">
+                                            {agent.image ? (
+                                                <img
+                                                    src={agent.image.replace('ipfs://', 'https://ipfs.io/ipfs/')}
+                                                    alt={agent.name}
+                                                    className="w-8 h-8 rounded-lg object-cover border border-white/10"
+                                                />
+                                            ) : (
+                                                <div className={`
+                                                    w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold font-mono border
+                                                    ${index === 0 ? 'bg-yellow-950/30 border-yellow-800/50 text-yellow-400' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}
+                                                `}>
+                                                    {agent.ticker.slice(0, 2)}
+                                                </div>
+                                            )}
+                                            <div className="overflow-hidden">
+                                                <div className="text-xs font-medium text-zinc-200 truncate group-hover:text-white transition-colors">
+                                                    {agent.name}
+                                                </div>
+                                                <div className="text-[10px] text-zinc-500 font-mono truncate">
+                                                    {agent.ens}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Trust Label */}
+                                        <div className="text-[9px] text-zinc-600 uppercase tracking-wider font-medium">
+                                            Trust Score
+                                        </div>
+                                    </Link>
+                                ))}
+                        </div>
+                    </div>
+                )}
 
                 {/* Filter Bar */}
                 <div className="px-6 py-3 border-b border-white/5 bg-zinc-900/10 flex items-center gap-4 text-[10px] font-bold uppercase tracking-wider text-zinc-600">

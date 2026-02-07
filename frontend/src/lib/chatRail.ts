@@ -617,3 +617,70 @@ export async function settleChatSession(params: {
         client.release();
     }
 }
+
+export async function rollbackChatSessionSettlement(params: {
+    sessionId: string;
+    payer: string;
+    settledMicroUsdc: string;
+}): Promise<{ session: ChatSession; restoredMicroUsdc: string }> {
+    await ensureChatRailSchema();
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const sessionResult = await client.query<SessionRow>(
+            `SELECT * FROM chat_sessions WHERE id = $1 FOR UPDATE`,
+            [params.sessionId]
+        );
+
+        if (sessionResult.rowCount === 0) {
+            throw new Error('Session not found');
+        }
+
+        const row = sessionResult.rows[0];
+        if (row.payer.toLowerCase() !== params.payer.toLowerCase()) {
+            throw new Error('Session payer mismatch');
+        }
+
+        const requestedRestore = BigInt(params.settledMicroUsdc || '0');
+        const availableSettled = BigInt(row.total_settled_micro);
+        const restore = requestedRestore <= availableSettled ? requestedRestore : availableSettled;
+
+        await client.query(
+            `UPDATE chat_sessions
+             SET total_settled_micro = total_settled_micro - $2,
+                 unsettled_micro = unsettled_micro + $2,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [params.sessionId, restore.toString()]
+        );
+
+        await client.query(
+            `INSERT INTO agent_chat_earnings (agent_id, recipient, total_earned_micro, total_settled_micro, updated_at)
+             VALUES ($1, $2, 0, 0, NOW())
+             ON CONFLICT (agent_id, recipient)
+             DO UPDATE SET
+                total_settled_micro = GREATEST(0, agent_chat_earnings.total_settled_micro - $3),
+                updated_at = NOW()`,
+            [row.agent_id, row.agent_recipient, restore.toString()]
+        );
+
+        const updatedResult = await client.query<SessionRow>(
+            `SELECT * FROM chat_sessions WHERE id = $1 LIMIT 1`,
+            [params.sessionId]
+        );
+
+        await client.query('COMMIT');
+
+        return {
+            session: toChatSession(updatedResult.rows[0]),
+            restoredMicroUsdc: restore.toString(),
+        };
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
+}

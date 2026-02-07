@@ -77,6 +77,14 @@ function microToUsdc(value: string | number | bigint): string {
     return (micro / 1e6).toFixed(6);
 }
 
+const DEFAULT_CHAT_AUTH_CHAIN_ID = (() => {
+    const raw = process.env.NEXT_PUBLIC_CHAT_AUTH_CHAIN_ID?.trim();
+    if (!raw) return 11155111;
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed <= 0) return 11155111;
+    return parsed;
+})();
+
 function safeTrim(value: string | undefined): string {
     return (value ?? '').trim();
 }
@@ -144,7 +152,7 @@ export default function AgentChatRailPanel({
                 payer: walletAddress,
                 endpointType: selectedEndpointType,
                 endpointUrl: selectedEndpoint,
-                chainId: chainId ?? 84532,
+                chainId: chainId ?? DEFAULT_CHAT_AUTH_CHAIN_ID,
             });
             const authMessage = buildChatSessionAuthMessage(authPayload);
             const signature = await signMessageAsync({ message: authMessage });

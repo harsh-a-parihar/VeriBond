@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getAgentEarnings, getChatSession, settleChatSession, updateChatSessionYellowState } from '@/lib/chatRail';
+import { getAgentEarnings, getChatSession, rollbackChatSessionSettlement, settleChatSession, updateChatSessionYellowState } from '@/lib/chatRail';
 import { submitYellowUsage } from '@/lib/yellowSession';
 
 export async function POST(request: Request) {
@@ -37,8 +37,17 @@ export async function POST(request: Request) {
                 currentVersion: result.session.yellowVersion ?? 0,
                 agentRecipient: result.session.agentRecipient as `0x${string}`,
                 settledMicroUsdc: result.settledMicroUsdc,
+                totalSettledMicroUsdc: result.session.totalSettledMicroUsdc,
                 asset: result.session.yellowAsset,
             });
+
+            if (yellowSettlement.enabled && !yellowSettlement.ok) {
+                await rollbackChatSessionSettlement({
+                    sessionId: result.session.id,
+                    payer: body.payer.trim(),
+                    settledMicroUsdc: result.settledMicroUsdc,
+                });
+            }
 
             if (yellowSettlement.enabled) {
                 await updateChatSessionYellowState({
