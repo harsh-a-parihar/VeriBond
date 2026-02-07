@@ -52,7 +52,7 @@ async function main() {
             address: UMA_RESOLVER as `0x${string}`,
             abi: UMA_RESOLVER_ABI,
             functionName: 'getAssertionStatus',
-            args: [contentHashFromChain],
+            args: [contentHashFromChain as `0x${string}`],
         });
         console.log('UMA Resolver Status (Content Hash):', { pending, resolved, outcome, id });
         assertionId = id;
@@ -76,7 +76,7 @@ async function main() {
                 address: UMA_OPTIMISTIC_ORACLE_V3 as `0x${string}`,
                 abi: OPTIMISTIC_ORACLE_V3_ABI,
                 functionName: 'getAssertion',
-                args: [assertionId],
+                args: [assertionId as `0x${string}`],
             });
             console.log('OOV3 Assertion (Fixed ABI):', {
                 expirationTime: assertion.expirationTime.toString(),

@@ -24,6 +24,7 @@ import {
 import Link from 'next/link';
 import AgentMarketPanel from '@/components/AgentMarketPanel';
 import AgentChatRailPanel from '@/components/AgentChatRailPanel';
+import ClaimNameModal from '@/components/ClaimNameModal';
 
 type AgentMetadata = {
     name?: string;
@@ -58,6 +59,7 @@ export default function AgentDetailPage() {
     const [agentOwner, setAgentOwner] = useState<string | null>(null);
     const [dbTrustScore, setDbTrustScore] = useState<number>(0);
     const [activeTab, setActiveTab] = useState<'overview' | 'holders' | 'activity' | 'claims'>('overview');
+    const [isClaimModalOpen, setIsClaimModalOpen] = useState(false);
 
     // 1. Fetch Agent Identity
     const { data: agentWallet } = useReadContract({
@@ -302,7 +304,7 @@ export default function AgentDetailPage() {
                             {!claimedName && dbTrustScore >= 50 && address?.toLowerCase() === agentOwner && (
                                 <button
                                     className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 border border-purple-500 rounded text-white text-xs font-medium transition-colors"
-                                    onClick={() => alert('Claim Name feature coming soon! Deploy AgentNames contract first.')}
+                                    onClick={() => setIsClaimModalOpen(true)}
                                 >
                                     Claim .veribond Name
                                 </button>
@@ -375,6 +377,16 @@ export default function AgentDetailPage() {
                             : undefined
                     }
                     endpoints={metadata?.endpoints}
+                />
+
+                {/* Claim Name Modal */}
+                <ClaimNameModal
+                    isOpen={isClaimModalOpen}
+                    onClose={() => setIsClaimModalOpen(false)}
+                    agentId={agentId.toString()}
+                    agentWallet={typeof agentWallet === 'string' ? agentWallet : ''}
+                    trustScore={dbTrustScore || trustScore}
+                    onSuccess={(name) => setClaimedName(name)}
                 />
 
                 {/* 2. Stats Grid */}
