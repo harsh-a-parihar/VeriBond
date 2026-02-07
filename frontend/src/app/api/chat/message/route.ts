@@ -70,8 +70,68 @@ function resolveRelativeUrl(baseUrl: string, candidate: string): string | null {
     }
 }
 
+/**
+ * Resolve ENS name to URL via public ENS API.
+ * Looks for 'url' or 'veribond.endpoint' text records.
+ */
+async function resolveENSToUrl(ensName: string): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    try {
+        // Try public ENS API to get text records
+        const apiUrl = `https://api.ensideas.com/ens/resolve/${encodeURIComponent(ensName.toLowerCase())}`;
+        const res = await fetch(apiUrl, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            signal: controller.signal,
+        });
+
+        if (!res.ok) {
+            throw new Error(`ENS resolution failed: ${res.status}`);
+        }
+
+        const data = await res.json() as Record<string, unknown>;
+
+        // Check for URL in text records or resolved data
+        const textRecords = data.texts as Record<string, string> | undefined;
+        const urlFromText =
+            textRecords?.['veribond.endpoint'] ||
+            textRecords?.['url'] ||
+            textRecords?.['endpoint'] ||
+            (typeof data.url === 'string' ? data.url : null);
+
+        if (urlFromText && typeof urlFromText === 'string' && urlFromText.trim()) {
+            // Validate it's a proper URL
+            try {
+                const parsed = new URL(urlFromText.trim());
+                if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+                    return parsed.toString();
+                }
+            } catch {
+                // Not a valid URL
+            }
+        }
+
+        throw new Error(`No URL text record found for ${ensName}`);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'ENS resolution failed';
+        throw new Error(`Failed to resolve ENS endpoint ${ensName}: ${message}`);
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
 async function resolveEndpointUrl(endpointType: string, endpointUrl: string): Promise<string> {
-    if (endpointType.toUpperCase() !== 'A2A') {
+    const type = endpointType.toUpperCase();
+
+    // Handle ENS endpoints - resolve .eth name to URL from text records
+    if (type === 'ENS') {
+        return await resolveENSToUrl(endpointUrl);
+    }
+
+    // Handle A2A endpoints - fetch agent card to find chat endpoint
+    if (type !== 'A2A') {
         return endpointUrl;
     }
 

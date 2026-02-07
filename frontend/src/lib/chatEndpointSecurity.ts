@@ -28,3 +28,14 @@ export function isAllowedChatEndpointUrl(value: string): boolean {
         return false;
     }
 }
+
+/**
+ * Check if a string is a valid ENS name for use as a chat endpoint.
+ * Examples: myagent.eth, subdomain.myagent.eth
+ */
+export function isValidENSEndpoint(endpoint: string): boolean {
+    if (!endpoint || typeof endpoint !== 'string') return false;
+    const trimmed = endpoint.trim().toLowerCase();
+    // Must end with .eth and have valid label characters
+    return /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*\.eth$/i.test(trimmed);
+}

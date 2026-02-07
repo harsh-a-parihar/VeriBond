@@ -10,10 +10,11 @@ import {
     type ChatSessionAuthPayload,
     type ChatSignatureType,
 } from '@/lib/chatAuth';
-import { isAllowedChatEndpointUrl } from '@/lib/chatEndpointSecurity';
+import { isAllowedChatEndpointUrl, isValidENSEndpoint } from '@/lib/chatEndpointSecurity';
 import { getYellowRailSnapshot } from '@/lib/yellowRail';
 import { initializeYellowAppSession } from '@/lib/yellowSession';
 import { getYellowChainIdOrDefault } from '@/lib/yellowConfig';
+
 
 type SessionAuthRequest = {
     signatureType?: ChatSignatureType;
@@ -167,8 +168,13 @@ export async function POST(request: Request) {
         if (!agentRecipient || !isAddress(agentRecipient)) {
             return NextResponse.json({ error: 'Valid agentRecipient is required' }, { status: 400 });
         }
-        if (!endpointUrl || !isAllowedChatEndpointUrl(endpointUrl)) {
-            return NextResponse.json({ error: 'Valid endpointUrl is required' }, { status: 400 });
+        // Allow ENS names (*.eth) when endpoint type is ENS, or valid URLs otherwise
+        const isValidEndpoint = endpointUrl && (
+            isAllowedChatEndpointUrl(endpointUrl) ||
+            (endpointType === 'ENS' && isValidENSEndpoint(endpointUrl))
+        );
+        if (!isValidEndpoint) {
+            return NextResponse.json({ error: 'Valid endpointUrl is required (URL or .eth name for ENS type)' }, { status: 400 });
         }
 
         let prepayMicroUsdc: bigint;
