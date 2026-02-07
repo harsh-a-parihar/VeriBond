@@ -1,0 +1,67 @@
+services:
+  - type: web
+    name: veribond-web
+    runtime: node
+    plan: free
+    branch: main
+    autoDeploy: true
+    buildCommand: npm ci --prefix frontend && npm run build --prefix frontend
+    startCommand: npm run start --prefix frontend
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_RPC_URL
+        value: https://sepolia.base.org
+      - key: NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
+        sync: false
+      - key: NEXT_PUBLIC_PINATA_JWT
+        sync: false
+      - key: PRIVATE_KEY
+        sync: false
+      - key: NEXT_PUBLIC_CHAT_AUTH_CHAIN_ID
+        value: "11155111"
+      - key: YELLOW_WS_URL
+        value: wss://clearnet-sandbox.yellow.com/ws
+      - key: YELLOW_CHAIN_ID
+        value: "11155111"
+      - key: YELLOW_APP_ASSET
+        value: ytest.usd
+      - key: YELLOW_SIGNER_RPC_URL
+        value: https://ethereum-sepolia-rpc.publicnode.com
+      - key: YELLOW_OPERATOR_PRIVATE_KEY
+        sync: false
+      - key: YELLOW_APP_QUORUM
+        value: "1"
+      - key: YELLOW_DEBUG
+        value: "0"
+      - key: AGENT_CHAT_TIMEOUT_MS
+        value: "60000"
+      - key: AGENT_CHAT_MAX_RETRIES
+        value: "0"
+      - key: AGENT_CHAT_RETRY_BASE_MS
+        value: "350"
+      - key: YELLOW_RPC_TIMEOUT_MS
+        value: "6000"
+      - key: YELLOW_STATUS_CACHE_MS
+        value: "30000"
+      - key: YELLOW_MESSAGE_FEE_MICRO_USDC
+        value: "20000"
+      - key: YELLOW_SETTLE_THRESHOLD_MICRO_USDC
+        value: "100000"
+      - key: YELLOW_DEFAULT_PREPAY_MICRO_USDC
+        value: "1000000"
+
+  - type: cron
+    name: veribond-indexer-sync
+    runtime: node
+    plan: free
+    branch: main
+    schedule: "*/2 * * * *"
+    buildCommand: echo "indexer cron ready"
+    startCommand: node frontend/scripts/run-indexer-sync.mjs
+    envVars:
+      - key: APP_BASE_URL
+        sync: false

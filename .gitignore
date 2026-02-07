@@ -47,4 +47,3 @@ docs/*.md
 
 # Deployment-specific configs (keep local)
 DEPLOYMENT_RENDER.md
-render.yaml
