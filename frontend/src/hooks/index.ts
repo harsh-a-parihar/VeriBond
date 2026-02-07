@@ -4,3 +4,4 @@ export { useUSDCBalance, useUSDCAllowance } from './useUSDC';
 export { useAgentOwner, useAgentWallet, useAgentURI, useAgentBalance, useAgentIdentity } from './useAgentIdentity';
 export { useCanResolve, MOCK_RESOLVER_ABI } from './useResolver';
 export { useGaslessTransaction } from './useGaslessTransaction';
+export { useAuctionStats } from './useAuctionStats';
