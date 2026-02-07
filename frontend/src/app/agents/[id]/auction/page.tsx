@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, usePublicClient, useBlockNumber } from 'wagmi';
 import { ADMIN_WALLET, AGENT_TOKEN_FACTORY, USDC } from '@/lib/contracts';
 import { AGENT_TOKEN_FACTORY_ABI, CCA_ABI, POST_AUCTION_LIQUIDITY_MANAGER_ABI } from '@/lib/abis';
+import { useGaslessTransaction } from '@/hooks';
 import { formatUnits, parseUnits, maxUint160, maxUint48, parseAbiItem } from 'viem';
 import { Loader2, TrendingUp, Wallet, Clock, CheckCircle, ArrowLeft, Activity, Gavel } from 'lucide-react';
 
@@ -189,8 +190,12 @@ export default function AuctionPage() {
     const [userBids, setUserBids] = useState<bigint[]>([]);
     const [lpRecipient, setLpRecipient] = useState('');
     const [lpTokenAmount, setLpTokenAmount] = useState('');
+    const [useGasless, setUseGasless] = useState(true); // Default to gasless
     const publicClient = usePublicClient();
     const { data: currentBlock } = useBlockNumber({ watch: true });
+
+    // Gasless transaction hook
+    const { sendGasless, isReady: gaslessReady, isLoading: gaslessLoading, meeScanLink } = useGaslessTransaction();
 
     // Read claimBlock to check if claiming is available
     const { data: claimBlock } = useReadContract({
@@ -647,25 +652,52 @@ export default function AuctionPage() {
             // Per official docs: "maxPrice MUST be strictly above the current clearing price"
             const maxPriceQ96 = (floorPrice || BigInt(0)) + (tickSpacing || BigInt(0));
             console.log('[Bid] maxPriceQ96 (floorPrice + tickSpacing):', maxPriceQ96.toString());
+            console.log('[Bid] Gasless mode:', useGasless && gaslessReady);
 
-            console.log('[Bid] Submitting bid:', {
-                auctionAddress,
-                maxPriceQ96: maxPriceQ96.toString(),
-                amount: bidAmountParsed.toString(),
-                owner: address
-            });
+            // Use gasless if enabled and ready
+            if (useGasless && gaslessReady) {
+                console.log('[Bid] Submitting bid (gasless):', {
+                    auctionAddress,
+                    maxPriceQ96: maxPriceQ96.toString(),
+                    amount: bidAmountParsed.toString(),
+                    owner: address
+                });
 
-            writeBid({
-                address: auctionAddress,
-                abi: CCA_ABI,
-                functionName: 'submitBid',
-                args: [
-                    maxPriceQ96,             // maxPrice = floorPrice + tickSpacing
-                    bidAmountParsed,         // amount in USDC (6 decimals)
-                    address,                 // owner
-                    "0x" as `0x${string}`    // hookData (empty)
-                ],
-            });
+                await sendGasless({
+                    to: auctionAddress as `0x${string}`,
+                    abi: CCA_ABI,
+                    functionName: 'submitBid',
+                    args: [
+                        maxPriceQ96,
+                        bidAmountParsed,
+                        address,
+                        "0x" as `0x${string}`
+                    ],
+                });
+
+                setBidAmount('');
+                refetchPrice();
+                refetchCleared();
+            } else {
+                console.log('[Bid] Submitting bid:', {
+                    auctionAddress,
+                    maxPriceQ96: maxPriceQ96.toString(),
+                    amount: bidAmountParsed.toString(),
+                    owner: address
+                });
+
+                writeBid({
+                    address: auctionAddress,
+                    abi: CCA_ABI,
+                    functionName: 'submitBid',
+                    args: [
+                        maxPriceQ96,
+                        bidAmountParsed,
+                        address,
+                        "0x" as `0x${string}`
+                    ],
+                });
+            }
         } catch (error) {
             console.error('[Bid] Error:', error);
         }
@@ -778,14 +810,30 @@ export default function AuctionPage() {
                                     {approvalStep === 'erc20' ? 'Approve USDC (Step 1/2)' : 'Approve Permit2 (Step 2/2)'}
                                 </button>
                             ) : (
-                                <button
-                                    onClick={handleBid}
-                                    disabled={!bidAmount || !maxPrice || isBidPending || isBidConfirming}
-                                    className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-                                >
-                                    {isBidPending || isBidConfirming ? <Loader2 className="animate-spin h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
-                                    Submit Bid
-                                </button>
+                                <>
+                                    {/* Gasless Toggle */}
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="flex items-center gap-1">
+                                            <div className={`w-1.5 h-1.5 rounded-full ${gaslessReady ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} />
+                                            <span className="text-[10px] text-zinc-500">Gasless</span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setUseGasless(!useGasless)}
+                                            className={`relative w-8 h-4 rounded-full transition-colors ${useGasless ? 'bg-blue-600' : 'bg-zinc-700'}`}
+                                        >
+                                            <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${useGasless ? 'left-4' : 'left-0.5'}`} />
+                                        </button>
+                                    </div>
+                                    <button
+                                        onClick={handleBid}
+                                        disabled={!bidAmount || !maxPrice || isBidPending || isBidConfirming || gaslessLoading}
+                                        className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                                    >
+                                        {isBidPending || isBidConfirming || gaslessLoading ? <Loader2 className="animate-spin h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
+                                        {gaslessLoading ? 'Submitting (Gasless)...' : (useGasless ? '⚡ Submit Bid (Gasless)' : 'Submit Bid')}
+                                    </button>
+                                </>
                             )}
                         </div>
                     </div>

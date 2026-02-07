@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts } from 'wagmi';
 import { parseUnits, keccak256, toBytes } from 'viem';
-import { useUSDCBalance, useUSDCAllowance, useMinStake } from '@/hooks';
+import { useUSDCBalance, useUSDCAllowance, useMinStake, useGaslessTransaction } from '@/hooks';
 import { CONTRACTS } from '@/lib/contracts';
 import { TRUTH_STAKE_ABI, ERC20_ABI } from '@/lib/abis';
 import {
@@ -86,6 +86,10 @@ function SubmitClaimPage() {
     const [stakeAmount, setStakeAmount] = useState('1');
     const [resolutionMinutes, setResolutionMinutes] = useState('5');
     const [predictedOutcome, setPredictedOutcome] = useState<boolean>(true);
+    const [useGasless, setUseGasless] = useState(true); // Default to gasless
+
+    // Gasless transaction hook
+    const { sendGasless, isReady: gaslessReady, isLoading: gaslessLoading, meeScanLink } = useGaslessTransaction();
 
     // Fetch user's agents
     useEffect(() => {
@@ -199,26 +203,47 @@ function SubmitClaimPage() {
         setStep('approve');
     };
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
         console.log('Submitting claim:', {
             agentId: selectedAgentId,
             claimHash,
             stake: stakeInUsdc,
             resolvesAt,
-            outcome: predictedOutcome
+            outcome: predictedOutcome,
+            gasless: useGasless && gaslessReady
         });
 
         if (!selectedAgentId) {
             alert('Please select an agent first.');
             return;
         }
-        writeSubmit({
-            address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
-            abi: TRUTH_STAKE_ABI,
-            functionName: 'submitClaim',
-            args: [BigInt(selectedAgentId), claimHash as `0x${string}`, stakeInUsdc, BigInt(resolvesAt), predictedOutcome],
-        });
-        if (step === 'form') setStep('submit');
+
+        // Use gasless if enabled and ready
+        if (useGasless && gaslessReady) {
+            try {
+                setStep('submit');
+                await sendGasless({
+                    to: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                    abi: TRUTH_STAKE_ABI,
+                    functionName: 'submitClaim',
+                    args: [BigInt(selectedAgentId), claimHash as `0x${string}`, stakeInUsdc, BigInt(resolvesAt), predictedOutcome],
+                });
+                refetchBalance();
+                setStep('success');
+            } catch (err) {
+                console.error('Gasless submit failed:', err);
+                setStep('form');
+            }
+        } else {
+            // Fallback to normal wagmi writeContract
+            writeSubmit({
+                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+                abi: TRUTH_STAKE_ABI,
+                functionName: 'submitClaim',
+                args: [BigInt(selectedAgentId), claimHash as `0x${string}`, stakeInUsdc, BigInt(resolvesAt), predictedOutcome],
+            });
+            if (step === 'form') setStep('submit');
+        }
     };
 
     const canSubmit = selectedAgentId &&
@@ -467,10 +492,32 @@ function SubmitClaimPage() {
                             </div>
                         )}
 
+                        {/* Gasless Mode Toggle */}
+                        <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-900/50 border border-zinc-800">
+                            <div className="flex items-center gap-2">
+                                <div className={`w-2 h-2 rounded-full ${gaslessReady ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} />
+                                <span className="text-sm text-zinc-400">
+                                    Gasless Mode {gaslessReady ? '(Ready)' : '(Initializing...)'}
+                                </span>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setUseGasless(!useGasless)}
+                                className={`relative w-11 h-6 rounded-full transition-colors ${useGasless ? 'bg-teal-600' : 'bg-zinc-700'}`}
+                            >
+                                <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${useGasless ? 'left-6' : 'left-1'}`} />
+                            </button>
+                        </div>
+                        {useGasless && (
+                            <p className="text-xs text-teal-500/70 -mt-2">
+                                ⚡ No ETH needed - gas is sponsored by VeriBond
+                            </p>
+                        )}
+
                         {/* Submit button */}
                         <button
                             type="submit"
-                            disabled={!canSubmit || isApproving || isApproveConfirming || isSubmitting || isSubmitConfirming}
+                            disabled={!canSubmit || isApproving || isApproveConfirming || isSubmitting || isSubmitConfirming || gaslessLoading}
                             className="w-full p-4 rounded-lg bg-teal-600 text-white font-semibold text-lg hover:bg-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
                         >
                             {(isApproving || isApproveConfirming) && (
@@ -479,16 +526,27 @@ function SubmitClaimPage() {
                                     Approving USDC...
                                 </>
                             )}
-                            {(isSubmitting || isSubmitConfirming) && (
+                            {(isSubmitting || isSubmitConfirming || gaslessLoading) && (
                                 <>
                                     <Loader2 className="w-5 h-5 animate-spin" />
-                                    Submitting Claim...
+                                    {gaslessLoading ? 'Submitting (Gasless)...' : 'Submitting Claim...'}
                                 </>
                             )}
-                            {step === 'form' && !isApproving && !isSubmitting && (
-                                needsApproval ? 'Approve USDC & Submit' : 'Submit Claim'
+                            {step === 'form' && !isApproving && !isSubmitting && !gaslessLoading && (
+                                needsApproval ? 'Approve USDC & Submit' : (useGasless ? '⚡ Submit Claim (Gasless)' : 'Submit Claim')
                             )}
                         </button>
+
+                        {meeScanLink && (
+                            <a
+                                href={meeScanLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-teal-400 hover:text-teal-300 text-center block"
+                            >
+                                View on MEE Scan →
+                            </a>
+                        )}
 
                         {needsApproval && step === 'form' && (
                             <p className="text-xs text-zinc-500 text-center">

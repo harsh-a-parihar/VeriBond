@@ -44,3 +44,7 @@ lcov.info
 
 # Agent/Brain exported docs
 docs/*.md
+
+# Deployment-specific configs (keep local)
+DEPLOYMENT_RENDER.md
+render.yaml

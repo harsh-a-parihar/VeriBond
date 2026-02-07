@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
 import { createPublicClient, http, parseAbiItem } from 'viem';
 import { baseSepolia } from 'viem/chains';
-import { CONTRACTS } from '@/lib/contracts';
+import { CONTRACTS, VERIBOND_REGISTRAR } from '@/lib/contracts';
 import { TRUTH_STAKE_ABI, IDENTITY_REGISTRY_ABI, AGENT_TOKEN_FACTORY_ABI } from '@/lib/abis';
 
 // --- CONFIG ---
@@ -226,7 +226,7 @@ export async function GET(request: Request) {
         console.log(`Syncing logs from ${lastBlock} to ${toBlock}...`);
 
         // 2. Fetch Logs (Parallel)
-        const [identityLogs, claimSubmittedLogs, claimResolvedLogs, auctionLogs] = await Promise.all([
+        const [identityLogs, claimSubmittedLogs, claimResolvedLogs, auctionLogs, nameClaimedLogs] = await Promise.all([
             // Identity Registry: New Agents
             publicClient.getLogs({
                 address: CONTRACTS.IDENTITY_REGISTRY as `0x${string}`,
@@ -255,10 +255,17 @@ export async function GET(request: Request) {
                 event: parseAbiItem('event AuctionLaunched(uint256 indexed agentId, address token, address auction, uint256 tokensForSale, uint256 lpReserveTokens)'),
                 fromBlock: lastBlock + BigInt(1),
                 toBlock: toBlock,
+            }),
+            // VeriBondRegistrar: Name Claimed
+            publicClient.getLogs({
+                address: VERIBOND_REGISTRAR as `0x${string}`,
+                event: parseAbiItem('event NameClaimed(uint256 indexed agentId, string label, address owner, bytes32 node)'),
+                fromBlock: lastBlock + BigInt(1),
+                toBlock: toBlock,
             })
         ]);
 
-        console.log(`Found ${identityLogs.length} agents, ${claimSubmittedLogs.length} claims, ${claimResolvedLogs.length} resolutions, ${auctionLogs.length} auctions.`);
+        console.log(`Found ${identityLogs.length} agents, ${claimSubmittedLogs.length} claims, ${claimResolvedLogs.length} resolutions, ${auctionLogs.length} auctions, ${nameClaimedLogs.length} names.`);
 
         // 3. Process Agents
         for (const log of identityLogs) {
@@ -351,7 +358,21 @@ export async function GET(request: Request) {
             `, [agentId.toString(), auction, token, tokensForSale?.toString()]);
         }
 
-        // 7. Update State
+        // 7. Process Name Claims
+        for (const log of nameClaimedLogs) {
+            const { agentId, label } = log.args;
+            if (!agentId || !label) continue;
+
+            await client.query(`
+                UPDATE agents 
+                SET claimed_name = $2 
+                WHERE id = $1
+            `, [agentId.toString(), label]);
+
+            console.log(`[Indexer] Indexed ENS Name: ${label}.veribond for Agent #${agentId}`);
+        }
+
+        // 8. Update State
         await client.query("UPDATE indexer_state SET value = $1 WHERE key = 'last_synced_block'", [toBlock.toString()]);
         client.release();
 
@@ -361,7 +382,8 @@ export async function GET(request: Request) {
                 agents: identityLogs.length,
                 claims: claimSubmittedLogs.length,
                 resolutions: claimResolvedLogs.length,
-                auctions: auctionLogs.length
+                auctions: auctionLogs.length,
+                names: nameClaimedLogs.length
             },
             fromBlock: lastBlock.toString(),
             toBlock: toBlock.toString()

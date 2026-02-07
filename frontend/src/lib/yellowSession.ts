@@ -48,6 +48,7 @@ const DEFAULT_CHALLENGE_SECONDS = Math.max(60, Number(process.env.YELLOW_APP_CHA
 const DEFAULT_APP_QUORUM = Math.max(1, Math.min(2, Number(process.env.YELLOW_APP_QUORUM ?? '1')));
 const ASSET_DISCOVERY_LIMIT = Math.max(1, Number(process.env.YELLOW_ASSET_DISCOVERY_LIMIT ?? '120'));
 const YELLOW_DEBUG = process.env.YELLOW_DEBUG === '1';
+type HexAddress = `0x${string}`;
 
 function logYellow(message: string, details?: unknown): void {
     if (!YELLOW_DEBUG) return;
@@ -373,26 +374,28 @@ export async function initializeYellowAppSession(params: {
             settlementAsset: resolvedSettlementAsset,
         } = await authenticate(ws, operatorPrivateKey, application, scope, asset);
         const signer = createECDSAMessageSigner(operatorPrivateKey);
+        const recipientAddress = params.agentRecipient as HexAddress;
 
         const createWithAsset = async (assetForSession: string): Promise<CreateAppSessionResponse> => {
+            const operator = operatorAddress as HexAddress;
             const createMessage = await createAppSessionMessage(signer, {
                 definition: {
                     application,
                     protocol: RPCProtocolVersion.NitroRPC_0_4,
-                    participants: [operatorAddress, params.agentRecipient],
+                    participants: [operator, recipientAddress] as [HexAddress, HexAddress],
                     weights: [1, 1],
                     quorum: DEFAULT_APP_QUORUM,
                     challenge: DEFAULT_CHALLENGE_SECONDS,
                     nonce: Date.now(),
                 },
                 allocations: [
-                    { participant: operatorAddress, asset: assetForSession, amount: '0' },
-                    { participant: params.agentRecipient, asset: assetForSession, amount: '0' },
+                    { participant: operator, asset: assetForSession, amount: '0' },
+                    { participant: recipientAddress, asset: assetForSession, amount: '0' },
                 ],
                 session_data: JSON.stringify({
                     sessionId: params.sessionId,
                     payer: params.payer,
-                    recipient: params.agentRecipient,
+                    recipient: recipientAddress,
                 }),
             });
             return await sendRpc(ws, createMessage) as CreateAppSessionResponse;
