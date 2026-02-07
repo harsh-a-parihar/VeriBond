@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { settleChatSession } from '@/lib/chatRail';
+import { getAgentEarnings, getChatSession, settleChatSession, updateChatSessionYellowState } from '@/lib/chatRail';
+import { submitYellowUsage } from '@/lib/yellowSession';
 
 export async function POST(request: Request) {
     try {
@@ -20,7 +21,40 @@ export async function POST(request: Request) {
             payer: body.payer.trim(),
         });
 
-        return NextResponse.json(result);
+        let yellowSettlement: {
+            enabled: boolean;
+            ok: boolean;
+            appSessionId?: `0x${string}`;
+            version?: number;
+            status?: string;
+            error?: string;
+        } | null = null;
+
+        if (result.session.yellowAppSessionId && BigInt(result.settledMicroUsdc || '0') > BigInt(0)) {
+            yellowSettlement = await submitYellowUsage({
+                sessionId: result.session.id,
+                appSessionId: result.session.yellowAppSessionId as `0x${string}`,
+                currentVersion: result.session.yellowVersion ?? 0,
+                agentRecipient: result.session.agentRecipient as `0x${string}`,
+                settledMicroUsdc: result.settledMicroUsdc,
+                asset: result.session.yellowAsset,
+            });
+
+            if (yellowSettlement.enabled) {
+                await updateChatSessionYellowState({
+                    sessionId: result.session.id,
+                    yellowAppSessionId: yellowSettlement.appSessionId ?? result.session.yellowAppSessionId,
+                    yellowVersion: yellowSettlement.version ?? result.session.yellowVersion,
+                    yellowStatus: yellowSettlement.status ?? (yellowSettlement.ok ? 'settled' : 'settle-error'),
+                    yellowLastError: yellowSettlement.error ?? null,
+                });
+            }
+        }
+
+        const latestSession = await getChatSession(result.session.id);
+        const session = latestSession ?? result.session;
+        const earnings = await getAgentEarnings(session.agentId, session.agentRecipient);
+        return NextResponse.json({ ...result, session, earnings, yellowSettlement });
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to settle session';
         return NextResponse.json({ error: message }, { status: 500 });

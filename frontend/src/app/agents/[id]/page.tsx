@@ -368,6 +368,12 @@ export default function AgentDetailPage() {
                 <AgentChatRailPanel
                     agentId={agentId.toString()}
                     walletAddress={address}
+                    agentRecipient={
+                        (typeof agentWallet === 'string'
+                            && agentWallet !== '0x0000000000000000000000000000000000000000')
+                            ? (agentWallet as Address)
+                            : undefined
+                    }
                     endpoints={metadata?.endpoints}
                 />
 

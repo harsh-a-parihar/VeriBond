@@ -2,7 +2,9 @@
 
 import { useMemo, useState } from 'react';
 import type { Address } from 'viem';
+import { useAccount, useSignMessage } from 'wagmi';
 import { MessageSquare, Send, Wallet, Zap, RefreshCw } from 'lucide-react';
+import { buildChatSessionAuthMessage, createChatSessionAuthPayload } from '@/lib/chatAuth';
 
 type Endpoint = {
     type?: string;
@@ -13,6 +15,7 @@ type ChatSession = {
     id: string;
     agentId: string;
     payer: string;
+    agentRecipient: string;
     endpointType: string;
     endpointUrl: string;
     messageFeeMicroUsdc: string;
@@ -22,9 +25,41 @@ type ChatSession = {
     totalSettledMicroUsdc: string;
     messageCount: number;
     status: string;
+    yellowAppSessionId: string | null;
+    yellowAsset: string | null;
+    yellowProtocol: string | null;
+    yellowVersion: number;
+    yellowStatus: string | null;
+    yellowLastError: string | null;
+    yellowUpdatedAt: string | null;
     createdAt: string;
     updatedAt: string;
     lastSettledAt: string | null;
+};
+
+type AgentEarnings = {
+    agentId: string;
+    recipient: string;
+    totalEarnedMicroUsdc: string;
+    totalSettledMicroUsdc: string;
+    pendingMicroUsdc: string;
+    updatedAt: string;
+};
+
+type YellowSnapshot = {
+    enabled: boolean;
+    wsUrl?: string;
+    lastCheckedAt: string;
+    error?: string;
+};
+
+type YellowSessionInit = {
+    enabled: boolean;
+    created: boolean;
+    appSessionId?: string;
+    version?: number;
+    status?: string;
+    error?: string;
 };
 
 type ChatMessage = {
@@ -62,17 +97,24 @@ function prioritizeEndpoints(endpoints: Endpoint[]): Endpoint[] {
 export default function AgentChatRailPanel({
     agentId,
     walletAddress,
+    agentRecipient,
     endpoints,
 }: {
     agentId: string;
     walletAddress?: Address;
+    agentRecipient?: Address;
     endpoints?: Endpoint[];
 }) {
+    const { chainId } = useAccount();
+    const { signMessageAsync } = useSignMessage();
     const availableEndpoints = useMemo(() => prioritizeEndpoints(endpoints ?? []), [endpoints]);
     const [selectedEndpoint, setSelectedEndpoint] = useState<string>(availableEndpoints[0]?.value ?? '');
     const [selectedEndpointType, setSelectedEndpointType] = useState<string>((availableEndpoints[0]?.type ?? 'REST').toUpperCase());
     const [prepayUsdc, setPrepayUsdc] = useState('1.0');
     const [session, setSession] = useState<ChatSession | null>(null);
+    const [earnings, setEarnings] = useState<AgentEarnings | null>(null);
+    const [yellow, setYellow] = useState<YellowSnapshot | null>(null);
+    const [yellowSessionInit, setYellowSessionInit] = useState<YellowSessionInit | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [input, setInput] = useState('');
     const [statusMessage, setStatusMessage] = useState<string>('Open a rail session to start chat.');
@@ -82,7 +124,7 @@ export default function AgentChatRailPanel({
 
     const hasWallet = !!walletAddress;
 
-    const canOpenSession = hasWallet && safeTrim(selectedEndpoint).length > 0 && !sessionLoading;
+    const canOpenSession = hasWallet && !!agentRecipient && safeTrim(selectedEndpoint).length > 0 && !sessionLoading;
     const canSend = !!session && hasWallet && safeTrim(input).length > 0 && !sending;
 
     const handleSelectEndpoint = (value: string) => {
@@ -92,11 +134,22 @@ export default function AgentChatRailPanel({
     };
 
     const openSession = async () => {
-        if (!walletAddress || !selectedEndpoint.trim()) return;
+        if (!walletAddress || !selectedEndpoint.trim() || !agentRecipient) return;
         setSessionLoading(true);
-        setStatusMessage('Opening Yellow rail session...');
+        setStatusMessage('Signing session payload...');
 
         try {
+            const authPayload = createChatSessionAuthPayload({
+                agentId,
+                payer: walletAddress,
+                endpointType: selectedEndpointType,
+                endpointUrl: selectedEndpoint,
+                chainId: chainId ?? 84532,
+            });
+            const authMessage = buildChatSessionAuthMessage(authPayload);
+            const signature = await signMessageAsync({ message: authMessage });
+
+            setStatusMessage('Opening Yellow rail session...');
             const res = await fetch('/api/chat/session', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -106,6 +159,12 @@ export default function AgentChatRailPanel({
                     endpointType: selectedEndpointType,
                     endpointUrl: selectedEndpoint,
                     prepayUsdc,
+                    agentRecipient,
+                    auth: {
+                        signatureType: 'eip191',
+                        signature,
+                        payload: authPayload,
+                    },
                 }),
             });
 
@@ -115,6 +174,9 @@ export default function AgentChatRailPanel({
             }
 
             setSession(data.session as ChatSession);
+            setEarnings((data.earnings ?? null) as AgentEarnings | null);
+            setYellow((data.yellow ?? null) as YellowSnapshot | null);
+            setYellowSessionInit((data.yellowSessionInit ?? null) as YellowSessionInit | null);
             setMessages((data.messages ?? []) as ChatMessage[]);
             setStatusMessage('Session opened. Micropayment rail is active.');
         } catch (error) {
@@ -145,6 +207,8 @@ export default function AgentChatRailPanel({
             }
 
             setSession(data.session as ChatSession);
+            setEarnings((data.earnings ?? null) as AgentEarnings | null);
+            setYellowSessionInit((prev) => prev);
             setStatusMessage(`Settlement complete: ${microToUsdc(data.settledMicroUsdc ?? '0')} USDC`);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Settle failed';
@@ -179,6 +243,7 @@ export default function AgentChatRailPanel({
             }
 
             setSession(data.session as ChatSession);
+            setEarnings((data.earnings ?? null) as AgentEarnings | null);
             setMessages((data.messages ?? []) as ChatMessage[]);
 
             if (data.shouldSettle) {
@@ -219,6 +284,11 @@ export default function AgentChatRailPanel({
                     <Wallet className="h-4 w-4 text-zinc-500" /> Connect wallet to open chat rail.
                 </div>
             )}
+            {hasWallet && !agentRecipient && (
+                <div className="rounded border border-amber-900/40 bg-amber-950/20 p-3 text-xs text-amber-300">
+                    Agent payout wallet unavailable. Chat rail session cannot open until agent wallet is resolved.
+                </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="md:col-span-2 space-y-1.5">
@@ -253,6 +323,42 @@ export default function AgentChatRailPanel({
                 <LedgerMetric label="Unsettled" value={`${microToUsdc(session?.unsettledMicroUsdc ?? '0')} USDC`} />
                 <LedgerMetric label="Settled" value={`${microToUsdc(session?.totalSettledMicroUsdc ?? '0')} USDC`} />
             </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                <LedgerMetric label="Agent Earned" value={`${microToUsdc(earnings?.totalEarnedMicroUsdc ?? '0')} USDC`} />
+                <LedgerMetric label="Agent Settled" value={`${microToUsdc(earnings?.totalSettledMicroUsdc ?? '0')} USDC`} />
+                <LedgerMetric label="Agent Pending" value={`${microToUsdc(earnings?.pendingMicroUsdc ?? '0')} USDC`} />
+            </div>
+
+            <div className="rounded border border-white/10 bg-black/30 p-2.5 text-[11px] text-zinc-400 flex items-center justify-between gap-3">
+                <span>
+                    Yellow Rail: {yellow?.enabled ? 'Connected' : 'Unavailable'}
+                    {yellow?.wsUrl ? ` (${yellow.wsUrl})` : ''}
+                </span>
+                <span className="text-zinc-500">
+                    {yellow?.lastCheckedAt ? new Date(yellow.lastCheckedAt).toLocaleTimeString() : '--'}
+                </span>
+            </div>
+            {yellow?.error && (
+                <div className="text-[11px] text-amber-400 break-words">
+                    Yellow note: {yellow.error}
+                </div>
+            )}
+            {session?.yellowAppSessionId && (
+                <div className="text-[11px] text-zinc-500 break-all">
+                    App Session: {session.yellowAppSessionId} | v{session.yellowVersion} | {session.yellowStatus ?? 'unknown'}
+                </div>
+            )}
+            {session?.yellowLastError && (
+                <div className="text-[11px] text-amber-400 break-words">
+                    Yellow settlement error: {session.yellowLastError}
+                </div>
+            )}
+            {yellowSessionInit?.error && !session?.yellowAppSessionId && (
+                <div className="text-[11px] text-amber-400 break-words">
+                    Yellow session init: {yellowSessionInit.error}
+                </div>
+            )}
 
             <div className="flex flex-wrap gap-2">
                 <button

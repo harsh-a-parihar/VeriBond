@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { appendMessagesAndDebit, getChatSession, listChatMessages } from '@/lib/chatRail';
+import { appendMessagesAndDebit, getAgentEarnings, getChatSession, listChatMessages } from '@/lib/chatRail';
+import { isAllowedChatEndpointUrl } from '@/lib/chatEndpointSecurity';
 
 type EndpointRequestPayload = {
     agentId: string;
@@ -9,12 +10,19 @@ type EndpointRequestPayload = {
     timestamp: number;
 };
 
-function isHttpUrl(value: string): boolean {
-    try {
-        const parsed = new URL(value);
-        return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-    } catch {
-        return false;
+const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const AGENT_CHAT_TIMEOUT_MS = Number(process.env.AGENT_CHAT_TIMEOUT_MS ?? '15000');
+const AGENT_CHAT_MAX_RETRIES = Math.max(0, Number(process.env.AGENT_CHAT_MAX_RETRIES ?? '2'));
+const AGENT_CHAT_RETRY_BASE_MS = Math.max(100, Number(process.env.AGENT_CHAT_RETRY_BASE_MS ?? '350'));
+
+class EndpointHttpError extends Error {
+    status: number;
+    retriable: boolean;
+
+    constructor(status: number, message: string) {
+        super(message);
+        this.status = status;
+        this.retriable = RETRYABLE_STATUS_CODES.has(status);
     }
 }
 
@@ -103,44 +111,65 @@ async function resolveEndpointUrl(endpointType: string, endpointUrl: string): Pr
 }
 
 async function callAgentEndpoint(url: string, payload: EndpointRequestPayload): Promise<string> {
-    const controller = new AbortController();
-    const timeoutMs = Number(process.env.AGENT_CHAT_TIMEOUT_MS ?? '15000');
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let lastError: unknown;
 
-    try {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Accept: 'application/json, text/plain;q=0.9, */*;q=0.8',
-            },
-            body: JSON.stringify(payload),
-            signal: controller.signal,
-        });
+    for (let attempt = 0; attempt <= AGENT_CHAT_MAX_RETRIES; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), AGENT_CHAT_TIMEOUT_MS);
 
-        const rawText = await res.text();
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json, text/plain;q=0.9, */*;q=0.8',
+                },
+                body: JSON.stringify(payload),
+                signal: controller.signal,
+            });
 
-        if (!res.ok) {
-            const errorText = rawText.length > 300 ? `${rawText.slice(0, 300)}...` : rawText;
-            throw new Error(`Agent endpoint failed (${res.status}): ${errorText || 'No response body'}`);
-        }
+            const rawText = await res.text();
 
-        const contentType = res.headers.get('content-type') ?? '';
-        if (contentType.includes('application/json')) {
-            try {
-                const json = JSON.parse(rawText) as unknown;
-                const reply = extractReplyFromJson(json);
-                if (reply) return reply;
-                return rawText || 'Agent responded with an empty JSON payload.';
-            } catch {
-                // Fall through to text return.
+            if (!res.ok) {
+                const errorText = rawText.length > 300 ? `${rawText.slice(0, 300)}...` : rawText;
+                throw new EndpointHttpError(res.status, `Agent endpoint failed (${res.status}): ${errorText || 'No response body'}`);
             }
-        }
 
-        return rawText?.trim() || 'Agent responded with an empty message.';
-    } finally {
-        clearTimeout(timeout);
+            const contentType = res.headers.get('content-type') ?? '';
+            if (contentType.includes('application/json')) {
+                try {
+                    const json = JSON.parse(rawText) as unknown;
+                    const reply = extractReplyFromJson(json);
+                    if (reply) return reply;
+                    return rawText || 'Agent responded with an empty JSON payload.';
+                } catch {
+                    // Fall through to text return.
+                }
+            }
+
+            return rawText?.trim() || 'Agent responded with an empty message.';
+        } catch (error) {
+            lastError = error;
+            const isLastAttempt = attempt >= AGENT_CHAT_MAX_RETRIES;
+            const isRetriable =
+                (error instanceof EndpointHttpError && error.retriable)
+                || (error instanceof DOMException && error.name === 'AbortError')
+                || (error instanceof TypeError);
+
+            if (isLastAttempt || !isRetriable) {
+                throw error;
+            }
+
+            const backoffMs = AGENT_CHAT_RETRY_BASE_MS * (2 ** attempt);
+            const jitterMs = Math.floor(Math.random() * 100);
+            await new Promise((resolve) => setTimeout(resolve, backoffMs + jitterMs));
+        } finally {
+            clearTimeout(timeout);
+        }
     }
+
+    if (lastError instanceof Error) throw lastError;
+    throw new Error('Agent endpoint request failed');
 }
 
 export async function POST(request: Request) {
@@ -172,11 +201,14 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'Session is not open' }, { status: 400 });
         }
 
-        if (!isHttpUrl(session.endpointUrl)) {
+        if (!isAllowedChatEndpointUrl(session.endpointUrl)) {
             return NextResponse.json({ error: 'Invalid session endpoint URL' }, { status: 400 });
         }
 
         const resolvedEndpointUrl = await resolveEndpointUrl(session.endpointType, session.endpointUrl);
+        if (!isAllowedChatEndpointUrl(resolvedEndpointUrl)) {
+            return NextResponse.json({ error: 'Invalid resolved endpoint URL' }, { status: 400 });
+        }
 
         const payload: EndpointRequestPayload = {
             agentId: session.agentId,
@@ -196,12 +228,14 @@ export async function POST(request: Request) {
         });
 
         const messages = await listChatMessages(session.id, 100);
+        const earnings = await getAgentEarnings(debitResult.session.agentId, debitResult.session.agentRecipient);
 
         return NextResponse.json({
             reply: assistantReply,
             session: debitResult.session,
             shouldSettle: debitResult.shouldSettle,
             resolvedEndpointUrl,
+            earnings,
             messages,
         });
     } catch (error) {
