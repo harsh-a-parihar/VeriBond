@@ -67,5 +67,5 @@ export async function GET() {
                 pimlicoConfigured: aaConfig.pimlicoConfigured,
             },
         },
-    }, { status: ok ? 200 : 503 });
+    }, { status: 200 });
 }

@@ -4,7 +4,7 @@ import { Pool } from 'pg';
 let pool: Pool;
 
 if (!process.env.DATABASE_URL) {
-    throw new Error('Please define the DATABASE_URL environment variable inside .env.local');
+    console.error('⚠️ DATABASE_URL environment variable is missing in .env.local or Render environment!');
 }
 
 // Use a singleton pool in development to avoid exhausting connections
