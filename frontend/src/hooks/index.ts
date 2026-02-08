@@ -5,4 +5,5 @@ export { useAgentOwner, useAgentWallet, useAgentURI, useAgentBalance, useAgentId
 export { useCanResolve, MOCK_RESOLVER_ABI } from './useResolver';
 
 export { useAuctionStats } from './useAuctionStats';
+export { useSummaryStats } from './useSummaryStats';
 export { useAdaptiveWrite } from './useAdaptiveWrite';

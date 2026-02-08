@@ -4,7 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useAccount } from 'wagmi';
-import { useClaimCount, useAuctionStats } from '@/hooks';
+import { useClaimCount, useAuctionStats, useSummaryStats } from '@/hooks';
 import {
     ArrowRight,
     ShieldCheck,
@@ -93,6 +93,22 @@ export default function LandingPage() {
     const { isConnected } = useAccount();
     const { count } = useClaimCount();
     const { launched, isLoading: auctionsLoading } = useAuctionStats();
+    const {
+        agentsRegistered,
+        ensClaimed,
+        yellowEarnedMicroUsdc,
+        yellowSettledMicroUsdc,
+        isLoading: summaryLoading,
+    } = useSummaryStats();
+
+    const formatMicroUsdc = (micro: string): string => {
+        const parsed = Number(micro);
+        if (!Number.isFinite(parsed)) return '0.00';
+        const usdc = parsed / 1_000_000;
+        if (usdc >= 1_000_000) return `${(usdc / 1_000_000).toFixed(2)}M`;
+        if (usdc >= 1_000) return `${(usdc / 1_000).toFixed(2)}K`;
+        return usdc.toFixed(2);
+    };
 
     return (
         <div className="min-h-screen bg-[#020202] text-zinc-300 font-sans selection:bg-indigo-500/30">
@@ -283,10 +299,17 @@ export default function LandingPage() {
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-12">
                             <Metric label="Claims Indexed" value={count?.toString() || '0'} sub="From on-chain events" />
                             <Metric label="Uniswap CCA Auctions" value={auctionsLoading ? '...' : launched.toString()} sub="Launched (indexed)" />
-                            <Metric label="Collateral Asset" value="USDC" sub="Stake-backed claims" />
-                            <Metric label="Settlement Layer" value="Base" sub="Base Sepolia now" />
-                            <Metric label="Execution Rail" value="AA" sub="Gasless smart-wallet path" />
-                            <Metric label="Payment Rail" value="Nitrolite" sub="Per-message micropayments" />
+                            <Metric label="ENS Names Claimed" value={summaryLoading ? '...' : ensClaimed.toString()} sub=".veribond.basetest.eth" />
+                            <Metric
+                                label="Yellow Settled (USDC)"
+                                value={summaryLoading ? '...' : formatMicroUsdc(yellowSettledMicroUsdc)}
+                                sub={`Earned ${summaryLoading ? '...' : formatMicroUsdc(yellowEarnedMicroUsdc)} USDC`}
+                            />
+                            <Metric
+                                label="ERC-8004 Agents"
+                                value={summaryLoading ? '...' : agentsRegistered.toString()}
+                                sub="Registered through identity standard"
+                            />
                         </div>
                     </div>
                 </div>
@@ -318,8 +341,8 @@ export default function LandingPage() {
 
                         <FeatureCard
                             icon={Layers}
-                            title="Identity + Wallet Layer"
-                            desc="OwnerBadge + agent wallet mapping establish durable identity and authorization."
+                            title="ERC-8004 Identity Layer"
+                            desc="Identity/ownership + feedback rails follow ERC-8004-compatible agent trust infrastructure."
                             delay={100}
                         />
                         <FeatureCard
