@@ -7,7 +7,8 @@
         "register-agent": "tsx register-agent.ts",
         "register-direct": "tsx register-direct.ts",
         "test-claim-flow": "tsx test-claim-flow.ts",
-        "set-agent-wallet": "tsx set-agent-wallet.ts"
+        "set-agent-wallet": "tsx set-agent-wallet.ts",
+        "gemini-agent": "node gemini-agent.mjs"
     },
     "dependencies": {
         "agent0-sdk": "^1.5.2",

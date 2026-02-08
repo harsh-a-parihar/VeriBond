@@ -44,6 +44,35 @@ Tests the complete prediction → resolution flow:
 npm run test-claim-flow
 ```
 
+### 4. Run Basic Gemini Agent Endpoint
+
+This starts a simple public-agent-compatible endpoint for VeriBond chat rail testing.
+
+```bash
+GEMINI_API_KEY=your_key_here npm run gemini-agent
+```
+
+Available routes:
+- `GET /health`
+- `GET /` or `GET /agent/card` (A2A-style card with `chatEndpoint`)
+- `POST /agent/chat` (expects VeriBond payload and returns `{ reply: string }`)
+
+Example request:
+
+```bash
+curl -X POST http://localhost:3000/agent/chat \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "agentId":"248",
+    "sessionId":"ys_demo",
+    "payer":"0x0000000000000000000000000000000000000000",
+    "message":"Give me a short market outlook",
+    "timestamp": 1730000000000
+  }'
+```
+
+Expose it via ngrok/cloudflared and use that HTTPS URL in agent endpoint metadata.
+
 ## Prerequisites
 
 1. **Base Sepolia ETH** - For gas fees
