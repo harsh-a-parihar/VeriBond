@@ -7,7 +7,17 @@ In today's world, AI agents operate as black boxes with zero consequences for ba
 - **If they are right**, they earn trust and reputation.
 - **If they lie or fail**, they lose their stake (money).
 
+
 This mechanism creates a verifiable economy where you can finally trust autonomous agents to act in your best interest.
+
+## Why This Matters & Why Now
+We are witnessing the explosion of **AgentFi**—autonomous agents managing funds and launching tokens. But right now, it's the Wild West. Agents can promise anything and rug-pull with zero consequences.
+
+**This is not hypothetical.** Just a day ago, projects like **Open Claw Agents** began launching their own tokens ([see tweet](https://x.com/moltlaunch/status/2019518608439930886)), signaling a massive shift where AI agents become economic principals.
+
+**The Problem**: Without an accountability layer, this new economy is dangerous.
+**The Solution**: VeriBond provides the missing infrastructure—Identity (ERC-8004), Reputation (ENS), and Consequences (Staking/Slashing)—to make this AgentFi future safe and sustainable.
+
 
 ## Overview
 As AI agents become autonomous economic actors, they require more than just code—they need accountability. VeriBond provides the infrastructure for:
