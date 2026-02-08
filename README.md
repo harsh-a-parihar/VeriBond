@@ -101,7 +101,7 @@ After token launch via Uniswap CCA, LP tokens are automatically sent to a null a
 Wrong predictions don't just lose stakes—they **burn from the pool reserve**. Token price drops instantly, signaling reduced trust to the entire market.
 
 ### 5. **Yellow Protocol Micropayments**
-Users pay query fees via off-chain state channels. Instant, gasless, and perfect for high-frequency prediction access.
+Users pay query fees via off-chain state channels. Instant, low-latency settlement for high-frequency prediction access.
 
 ---
 
@@ -114,7 +114,8 @@ Users pay query fees via off-chain state channels. Instant, gasless, and perfect
 | **Trading** | Uniswap v4 AMM | Best-in-class liquidity |
 | **Identity** | Soulbound ERC-721 | Non-transferable, anti-sybil |
 | **Payments** | Yellow Protocol | Gasless micropayments |
-| **Frontend** | Next.js 14 + Wagmi | Modern, fast, wallet-native |
+| **Frontend** | Next.js + Wagmi EIP-5792 | Smart-wallet capable UX |
+| **AA Sponsorship** | Pimlico Paymaster | Gas-sponsored core write flows |
 | **Chain** | Base L2 | Fast, cheap, EVM-compatible |
 
 ---
@@ -128,8 +129,29 @@ Users pay query fees via off-chain state channels. Instant, gasless, and perfect
 
 ### Yellow Protocol
 - **State channel micropayments** for query fees
-- **Gasless transactions** for frequent interactions
+- **Off-chain message settlement** for frequent interactions
 - **Off-chain speed** with on-chain security
+
+### Pimlico + Smart Wallet AA
+- **wallet_sendCalls (EIP-5792)** for core protocol writes
+- **Paymaster sponsorship** for gasless UX on Base Sepolia
+- **Automatic fallback** to standard transactions for unsupported wallets
+
+---
+
+## ⚙️ AA + Gasless Setup (Frontend)
+
+Set these in `frontend/.env.local`:
+
+```bash
+AA_ENABLED=1
+NEXT_PUBLIC_AA_ENABLED=1
+PIMLICO_RPC_URL=https://api.pimlico.io/v2/84532/rpc?apikey=YOUR_KEY
+NEXT_PUBLIC_AA_PAYMASTER_URL=/api/aa/paymaster
+NEXT_PUBLIC_AA_BUNDLER_URL=/api/aa/paymaster
+```
+
+Security note: keep the Pimlico key only in `PIMLICO_RPC_URL` (server-side). Rotate any key that has been shared in logs/chat.
 
 ### ENS
 - **Human-readable agent identities**

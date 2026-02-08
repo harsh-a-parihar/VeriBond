@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useAccount } from 'wagmi';
 import { AGENT_TOKEN_FACTORY } from '@/lib/contracts';
 import { AGENT_TOKEN_FACTORY_ABI } from '@/lib/abis';
 import { useAgentIdentity } from '@/hooks/useAgentIdentity';
+import { useAdaptiveWrite } from '@/hooks/useAdaptiveWrite';
 import { parseEther } from 'viem';
 import { Loader2, AlertCircle, Rocket, ArrowLeft } from 'lucide-react';
 
@@ -25,27 +26,22 @@ export default function LaunchTokenPage() {
     const [durationHours, setDurationHours] = useState('24');
     const [minPrice, setMinPrice] = useState('0.1');
 
-    // Contract Write
-    const { writeContract, data: hash, error: writeError, isPending: isWritePending } = useWriteContract();
-
-    const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
-        hash,
-    });
+    const launchWrite = useAdaptiveWrite({ allowAA: true, fallbackToStandard: true });
 
     // --- DEBUG LOGGING ---
     useEffect(() => {
-        console.log('[LaunchToken] Hash:', hash);
-    }, [hash]);
+        console.log('[LaunchToken] Hash:', launchWrite.txHash, 'CallsId:', launchWrite.callsId);
+    }, [launchWrite.txHash, launchWrite.callsId]);
 
     useEffect(() => {
-        console.log('[LaunchToken] isConfirmed:', isConfirmed);
-    }, [isConfirmed]);
+        console.log('[LaunchToken] isConfirmed:', launchWrite.isConfirmed);
+    }, [launchWrite.isConfirmed]);
 
     useEffect(() => {
-        if (writeError) {
-            console.error('[LaunchToken] Write Error:', writeError);
+        if (launchWrite.error) {
+            console.error('[LaunchToken] Write Error:', launchWrite.error);
         }
-    }, [writeError]);
+    }, [launchWrite.error]);
     // --- END DEBUG LOGGING ---
 
     const handleLaunch = () => {
@@ -101,7 +97,7 @@ export default function LaunchTokenPage() {
             auctionStepsData
         });
 
-        writeContract({
+        launchWrite.writeContract({
             address: AGENT_TOKEN_FACTORY,
             abi: AGENT_TOKEN_FACTORY_ABI,
             functionName: 'launchAuction',
@@ -149,6 +145,11 @@ export default function LaunchTokenPage() {
                     <p className="text-sm text-zinc-500 mt-2 font-mono">
                         Initiate a Continuous Clearing Auction (CCA) on Uniswap v4.
                     </p>
+                </div>
+
+                <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/20 text-xs">
+                    <p className="text-zinc-300 font-semibold">Execution Mode: {launchWrite.modeLabel}</p>
+                    {launchWrite.warning && <p className="text-amber-400 mt-1">{launchWrite.warning}</p>}
                 </div>
 
                 {/* Main Form */}
@@ -220,17 +221,17 @@ export default function LaunchTokenPage() {
                     </div>
                 </div>
 
-                {writeError && (
+                {launchWrite.error && (
                     <div className="p-4 border border-red-900/50 bg-red-950/10 rounded flex items-start gap-3">
                         <AlertCircle className="text-red-500 h-5 w-5 shrink-0" />
                         <div>
                             <h3 className="text-sm font-bold text-red-500">Error Launching Auction</h3>
-                            <p className="text-xs text-red-400 mt-1 font-mono">{writeError.message}</p>
+                            <p className="text-xs text-red-400 mt-1 font-mono">{launchWrite.error.message}</p>
                         </div>
                     </div>
                 )}
 
-                {isConfirmed && (
+                {launchWrite.isConfirmed && (
                     <div className="p-4 border border-teal-900/50 bg-teal-950/10 rounded flex items-start gap-3">
                         <Rocket className="text-teal-500 h-5 w-5 shrink-0" />
                         <div>
@@ -243,11 +244,11 @@ export default function LaunchTokenPage() {
 
                 <button
                     onClick={handleLaunch}
-                    disabled={!name || !symbol || isWritePending || isConfirming || isConfirmed}
+                    disabled={!name || !symbol || launchWrite.isPending || launchWrite.isConfirming || launchWrite.isConfirmed}
                     className="w-full py-3 bg-zinc-100 hover:bg-white text-black font-bold uppercase tracking-wider text-xs rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                    {isWritePending || isConfirming ? <Loader2 className="animate-spin h-4 w-4" /> : null}
-                    {isWritePending ? 'Confirm in Wallet...' : isConfirming ? 'Deploying...' : 'Launch Auction'}
+                    {launchWrite.isPending || launchWrite.isConfirming ? <Loader2 className="animate-spin h-4 w-4" /> : null}
+                    {launchWrite.isPending ? 'Confirm in Wallet...' : launchWrite.isConfirming ? 'Deploying...' : 'Launch Auction'}
                 </button>
             </div>
         </div>

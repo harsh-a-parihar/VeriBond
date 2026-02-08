@@ -179,6 +179,18 @@ export const IDENTITY_REGISTRY_ABI = [
         stateMutability: 'nonpayable',
         inputs: [
             { name: 'agentId', type: 'uint256' },
+            { name: 'newWallet', type: 'address' },
+            { name: 'deadline', type: 'uint256' },
+            { name: 'signature', type: 'bytes' },
+        ],
+        outputs: [],
+    },
+    {
+        name: 'setAgentWallet',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [
+            { name: 'agentId', type: 'uint256' },
             { name: 'wallet', type: 'address' },
         ],
         outputs: [],

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
 import { getYellowRailSnapshot } from '@/lib/yellowRail';
 import { getYellowChainIdOrDefault, getYellowWsUrlOrDefault, getYellowAssetOrDefault } from '@/lib/yellowConfig';
+import { getAAHealthSummary } from '@/lib/aa/config';
 
 function isSet(value: string | undefined): boolean {
     return !!value && value.trim().length > 0;
@@ -31,6 +32,7 @@ export async function GET() {
         operatorKeyConfigured: isSet(process.env.YELLOW_OPERATOR_PRIVATE_KEY),
         signerRpcConfigured: isSet(process.env.YELLOW_SIGNER_RPC_URL) || isSet(process.env.NEXT_PUBLIC_RPC_URL),
     };
+    const aaConfig = getAAHealthSummary();
 
     let yellowSnapshot: Awaited<ReturnType<typeof getYellowRailSnapshot>> | null = null;
     let yellowSnapshotError: string | null = null;
@@ -56,6 +58,13 @@ export async function GET() {
                 config: yellowConfig,
                 rail: yellowSnapshot,
                 snapshotError: yellowSnapshotError,
+            },
+            aa: {
+                enabled: aaConfig.enabled,
+                chainId: aaConfig.chainId,
+                paymasterProxyUrl: aaConfig.paymasterProxyUrl,
+                bundlerUrl: aaConfig.bundlerUrl,
+                pimlicoConfigured: aaConfig.pimlicoConfigured,
             },
         },
     }, { status: ok ? 200 : 503 });

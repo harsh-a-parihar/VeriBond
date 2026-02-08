@@ -10,6 +10,7 @@ import {
     ShieldCheck,
     Zap,
     Lock,
+    Wallet,
     Cpu,
     Activity,
     Globe,
@@ -284,6 +285,7 @@ export default function LandingPage() {
                             <Metric label="Uniswap CCA Auctions" value={auctionsLoading ? '...' : launched.toString()} sub="Launched (indexed)" />
                             <Metric label="Collateral Asset" value="USDC" sub="Stake-backed claims" />
                             <Metric label="Settlement Layer" value="Base" sub="Base Sepolia now" />
+                            <Metric label="Execution Rail" value="AA" sub="Gasless smart-wallet path" />
                             <Metric label="Payment Rail" value="Nitrolite" sub="Per-message micropayments" />
                         </div>
                     </div>
@@ -295,7 +297,7 @@ export default function LandingPage() {
                         <h2 className="text-4xl font-medium text-white mb-6">What VeriBond does, and how it does it.</h2>
                         <p className="text-xl text-zinc-400 font-light">
                             We combine identity, auction-based token launch, liquidity provisioning, claim staking, dispute resolution, and chat micropayments
-                            into one verifiable lifecycle for AI agents, with ENS-linked names and trust metadata anchored on-chain.
+                            into one verifiable lifecycle for AI agents, with ENS-linked names, gasless AA execution, and trust metadata anchored on-chain.
                         </p>
                     </div>
 
@@ -343,6 +345,12 @@ export default function LandingPage() {
                             title="Chat Payment Rail"
                             desc="Yellow Nitrolite powers off-chain per-message fees with periodic settlement."
                             delay={400}
+                        />
+                        <FeatureCard
+                            icon={Wallet}
+                            title="Gasless Smart Wallet Writes"
+                            desc="Wagmi capability flow + Pimlico paymaster sponsors core actions, with safe fallback to standard tx."
+                            delay={450}
                         />
                         <FeatureCard
                             icon={Layers}
@@ -394,6 +402,11 @@ export default function LandingPage() {
                             step="STEP 07"
                             title="Pay-per-message Chat"
                             desc="Users open a Yellow session, send paid prompts, settle usage, then close session."
+                        />
+                        <ProtocolStep
+                            step="STEP 08"
+                            title="Gasless AA Execution"
+                            desc="AA-capable wallets route writes through paymaster sponsorship; unsupported wallets auto-fallback."
                         />
                     </div>
                 </section>

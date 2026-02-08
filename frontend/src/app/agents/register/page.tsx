@@ -1,16 +1,16 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
+import { useAccount, usePublicClient, useReadContract } from 'wagmi';
 import { CONTRACTS } from '@/lib/contracts';
 import { IDENTITY_REGISTRY_ABI, OWNER_BADGE_ABI } from '@/lib/abis';
-import { useGaslessTransaction } from '@/hooks';
 import { extractAgentIdFromReceipt } from '@/utils/contracts';
+import { useAdaptiveWrite } from '@/hooks/useAdaptiveWrite';
 import {
     ArrowLeft, Loader2, Lock, CheckCircle2, AlertCircle, Shield,
-    Plus, X, Globe, Server, Wallet, FileCheck, Tag, Power, Settings, Ban, Award
+    Plus, X, Globe, Server, FileCheck, Tag, Power, Settings, Ban, Award
 } from 'lucide-react';
 
 // ============================================================================
@@ -98,6 +98,7 @@ async function uploadToIPFS(metadata: AgentMetadata): Promise<string> {
 
 export default function RegisterAgentPage() {
     const { address, isConnected } = useAccount();
+    const publicClient = usePublicClient();
 
     // ========== Owner Badge Check (Frictionless) ==========
     const { data: hasBadge, isLoading: badgeLoading, refetch: refetchBadge } = useReadContract({
@@ -155,27 +156,16 @@ export default function RegisterAgentPage() {
     // ========== Transaction State ==========
     const [step, setStep] = useState<'form' | 'minting-badge' | 'uploading' | 'registering' | 'success'>('form');
     const [agentId, setAgentId] = useState<string | null>(null);
-    const [agentURI, setAgentURI] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [useGasless, setUseGasless] = useState(true); // Default to gasless
-
-    // Gasless transaction hook
-    const { sendGasless, isReady: gaslessReady, isLoading: gaslessLoading, meeScanLink } = useGaslessTransaction();
-
-    useEffect(() => { if (address && !evmAddress) setEvmAddress(address); }, [address, evmAddress]);
 
     // Logging state changes
     useEffect(() => {
         console.log('[Register] Step changed:', step);
     }, [step]);
 
-    // ========== Badge Mint Transaction ==========
-    const { data: mintBadgeHash, writeContract: writeMintBadge, error: mintBadgeError } = useWriteContract();
-    const { isSuccess: isBadgeMinted } = useWaitForTransactionReceipt({ hash: mintBadgeHash });
-
-    // ========== Register Transaction ==========
-    const { data: registerHash, writeContract: writeRegister, error: registerError } = useWriteContract();
-    const { isSuccess: isRegisterConfirmed, data: registerReceipt } = useWaitForTransactionReceipt({ hash: registerHash });
+    // ========== Adaptive Transactions (AA + fallback) ==========
+    const mintBadgeWrite = useAdaptiveWrite({ allowAA: true, fallbackToStandard: true });
+    const registerWrite = useAdaptiveWrite({ allowAA: true, fallbackToStandard: true });
 
 
 
@@ -189,7 +179,7 @@ export default function RegisterAgentPage() {
 
     // ========== Registration Flow ==========
     const handleRegister = async () => {
-        console.log('[Register] Handle Register Clicked. Badge:', hasBadge, 'Gasless:', useGasless && gaslessReady);
+        console.log('[Register] Handle Register Clicked. Badge:', hasBadge);
         setError(null);
 
         // Step 1: Check if need to mint badge first
@@ -197,29 +187,17 @@ export default function RegisterAgentPage() {
             console.log('[Register] No badge found. Initiating mint...');
             setStep('minting-badge');
 
-            // Use gasless if enabled
-            if (useGasless && gaslessReady) {
-                try {
-                    await sendGasless({
-                        to: CONTRACTS.OWNER_BADGE as `0x${string}`,
-                        abi: OWNER_BADGE_ABI,
-                        functionName: 'mint',
-                        args: [],
-                    });
-                    refetchBadge();
-                    await proceedWithRegistration();
-                } catch (err) {
-                    console.error('[Register] Gasless mint failed:', err);
-                    setError(err instanceof Error ? err.message : 'Gasless mint failed');
-                    setStep('form');
-                }
-            } else {
-                writeMintBadge({
+            try {
+                await mintBadgeWrite.writeContractAsync({
                     address: CONTRACTS.OWNER_BADGE as `0x${string}`,
                     abi: OWNER_BADGE_ABI,
                     functionName: 'mint',
                     args: [],
                 });
+            } catch (mintError) {
+                const message = mintError instanceof Error ? mintError.message : 'Failed to mint owner badge';
+                setError(message);
+                setStep('form');
             }
             return;
         }
@@ -228,8 +206,8 @@ export default function RegisterAgentPage() {
         await proceedWithRegistration();
     };
 
-    const proceedWithRegistration = async () => {
-        console.log('[Register] Starting registration process... Gasless:', useGasless && gaslessReady);
+    const proceedWithRegistration = useCallback(async () => {
+        console.log('[Register] Starting registration process...');
         setStep('uploading');
         try {
             const metadata: AgentMetadata = {
@@ -242,7 +220,7 @@ export default function RegisterAgentPage() {
                 domains,
                 metadata: { version, category, ...customMeta },
                 active: isActive,
-                evm_address: evmAddress,
+                evm_address: evmAddress || address || '',
                 updatedAt: Math.floor(Date.now() / 1000),
             };
 
@@ -250,85 +228,87 @@ export default function RegisterAgentPage() {
             const uri = await uploadToIPFS(metadata);
             console.log('[Register] IPFS Upload success:', uri);
 
-            setAgentURI(uri);
             setStep('registering');
 
-            // Use gasless if enabled
-            if (useGasless && gaslessReady) {
-                console.log('[Register] Submitting register transaction (gasless)...');
-                await sendGasless({
-                    to: CONTRACTS.IDENTITY_REGISTRY as `0x${string}`,
-                    abi: IDENTITY_REGISTRY_ABI,
-                    functionName: 'register',
-                    args: [uri],
-                });
-                // Trigger Indexer Sync
-                fetch('/api/indexer/sync').then(() => console.log('[Register] Sync triggered')).catch(console.error);
-                setStep('success');
-            } else {
-                console.log('[Register] Submitting register transaction...');
-                writeRegister({
-                    address: CONTRACTS.IDENTITY_REGISTRY as `0x${string}`,
-                    abi: IDENTITY_REGISTRY_ABI,
-                    functionName: 'register',
-                    args: [uri],
-                });
-            }
+            setStep('registering');
+
+            console.log('[Register] Submitting register transaction...');
+            await registerWrite.writeContractAsync({
+                address: CONTRACTS.IDENTITY_REGISTRY as `0x${string}`,
+                abi: IDENTITY_REGISTRY_ABI,
+                functionName: 'register',
+                args: [uri],
+            });
         } catch (err) {
             console.error('[Register] Registration flow failed:', err);
             setError(err instanceof Error ? err.message : 'Failed');
             setStep('form');
         }
-    };
+    }, [
+        agentName,
+        agentDescription,
+        imageUrl,
+        endpoints,
+        reputation,
+        cryptoEconomic,
+        teeAttestation,
+        skills,
+        domains,
+        version,
+        category,
+        customMeta,
+        isActive,
+        evmAddress,
+        address,
+        registerWrite,
+    ]);
 
     // After badge minted, proceed with registration
     useEffect(() => {
-        if (isBadgeMinted && step === 'minting-badge') {
+        if (mintBadgeWrite.isConfirmed && step === 'minting-badge') {
             console.log('[Register] Badge minted successfully. Proceeding to registration...');
             refetchBadge();
             proceedWithRegistration();
         }
-    }, [isBadgeMinted, step, refetchBadge]);
+    }, [mintBadgeWrite.isConfirmed, step, refetchBadge, proceedWithRegistration]);
 
     // Extract agent ID and set wallet
     useEffect(() => {
-        if (isRegisterConfirmed && registerReceipt && address && step === 'registering') {
-            const id = extractAgentIdFromReceipt(registerReceipt);
-            console.log('[Register] Registration confirmed. Receipt:', registerReceipt);
-            console.log('[Register] Extracted Agent ID:', id);
+        if (!registerWrite.isConfirmed || !registerWrite.txHash || !address || step !== 'registering' || !publicClient) {
+            return;
+        }
 
-            if (id) {
-                setAgentId(id.toString());
+        let cancelled = false;
+        const loadReceipt = async () => {
+            try {
+                const registerReceipt = await publicClient.getTransactionReceipt({ hash: registerWrite.txHash! });
+                if (cancelled) return;
 
-                // Trigger Indexer Sync immediately
-                fetch('/api/indexer/sync').then(() => console.log('[Register] Sync triggered')).catch(console.error);
+                const id = extractAgentIdFromReceipt(registerReceipt);
+                console.log('[Register] Registration confirmed. Receipt:', registerReceipt);
+                console.log('[Register] Extracted Agent ID:', id);
 
-                setStep('success'); // Direct success
-            } else {
+                if (id) {
+                    setAgentId(id.toString());
+                    fetch('/api/indexer/sync').then(() => console.log('[Register] Sync triggered')).catch(console.error);
+                    setStep('success');
+                    return;
+                }
+
                 console.error('[Register] Failed to extract Agent ID from receipt!');
                 setError('Failed to extract Agent ID from transaction receipt.');
+            } catch (receiptError) {
+                if (cancelled) return;
+                const message = receiptError instanceof Error ? receiptError.message : 'Could not read transaction receipt';
+                setError(message);
             }
-        }
-    }, [isRegisterConfirmed, registerReceipt, address, step]);
+        };
 
-
-
-    // Error handling
-    useEffect(() => {
-        if (mintBadgeError && step === 'minting-badge') {
-            console.error('[Register] Mint Badge Error:', mintBadgeError);
-            setError(mintBadgeError.message);
-            setStep('form');
-        }
-        if (registerError && step === 'registering') {
-            console.error('[Register] Registration Error:', registerError);
-            setError(registerError.message);
-            setStep('form');
-        }
-    }, [mintBadgeError, registerError, step]);
-
-
-
+        void loadReceipt();
+        return () => {
+            cancelled = true;
+        };
+    }, [registerWrite.isConfirmed, registerWrite.txHash, address, step, publicClient]);
 
     const canSubmit = agentName.trim() && agentDescription.trim() && endpoints.some(e => e.value.trim());
     const isLoading = badgeLoading || blacklistLoading;
@@ -356,6 +336,13 @@ export default function RegisterAgentPage() {
                 <div className="mb-8">
                     <h1 className="text-2xl font-medium text-zinc-200 mb-2">Register ERC-8004 Agent</h1>
                     <p className="text-zinc-600 text-sm">Full metadata configuration based on Agent0 SDK</p>
+                </div>
+
+                <div className="mb-6 p-3 rounded-lg border border-zinc-800 bg-zinc-900/20 text-xs">
+                    <p className="text-zinc-300 font-semibold">Execution Mode: {registerWrite.modeLabel}</p>
+                    {registerWrite.warning && (
+                        <p className="text-amber-400 mt-1">{registerWrite.warning}</p>
+                    )}
                 </div>
 
                 {!isConnected ? (
@@ -558,38 +545,12 @@ export default function RegisterAgentPage() {
                             </div>
                         )}
 
-                        {/* Gasless Mode Toggle */}
-                        <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-900/40 border border-zinc-800">
-                            <div className="flex items-center gap-2">
-                                <div className={`w-2 h-2 rounded-full ${gaslessReady ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} />
-                                <span className="text-xs text-zinc-500">
-                                    Gasless Mode {gaslessReady ? '(Ready)' : '(Initializing...)'}
-                                </span>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={() => setUseGasless(!useGasless)}
-                                className={`relative w-10 h-5 rounded-full transition-colors ${useGasless ? 'bg-zinc-600' : 'bg-zinc-800'}`}
-                            >
-                                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${useGasless ? 'left-5' : 'left-0.5'}`} />
-                            </button>
-                        </div>
-                        {useGasless && (
-                            <p className="text-[10px] text-zinc-600 -mt-2">
-                                ⚡ No ETH needed - gas is sponsored
-                            </p>
-                        )}
+
 
                         {/* Submit */}
-                        <button type="submit" disabled={!canSubmit || step !== 'form' || gaslessLoading}
+                        <button type="submit" disabled={!canSubmit || step !== 'form'}
                             className="w-full p-4 rounded-lg border border-zinc-700 bg-zinc-800 text-zinc-200 font-medium hover:bg-zinc-700 disabled:opacity-50 transition-all">
-                            {gaslessLoading ? (
-                                <><Loader2 className="w-4 h-4 animate-spin inline mr-2" />Registering (Gasless)...</>
-                            ) : !hasBadge ? (
-                                useGasless ? '⚡ Mint Badge & Register (Gasless)' : 'Mint Badge & Register Agent'
-                            ) : (
-                                useGasless ? '⚡ Register Agent (Gasless)' : 'Register Agent on Base Sepolia'
-                            )}
+                            {!hasBadge ? 'Mint Badge & Register Agent' : 'Register Agent on Base Sepolia'}
                         </button>
                     </form>
                 )}

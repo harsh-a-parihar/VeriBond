@@ -4,11 +4,12 @@ import React, { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts } from 'wagmi';
+import { useAccount, useReadContracts } from 'wagmi';
 import { parseUnits, keccak256, toBytes } from 'viem';
-import { useUSDCBalance, useUSDCAllowance, useMinStake, useGaslessTransaction } from '@/hooks';
+import { useUSDCBalance, useUSDCAllowance, useMinStake } from '@/hooks';
 import { CONTRACTS } from '@/lib/contracts';
 import { TRUTH_STAKE_ABI, ERC20_ABI } from '@/lib/abis';
+import { useAdaptiveWrite } from '@/hooks/useAdaptiveWrite';
 import {
     ArrowLeft, Cpu, AlertCircle, CheckCircle2, Loader2, Lock, ChevronDown
 } from 'lucide-react';
@@ -17,7 +18,7 @@ import {
 interface Agent {
     id: string;
     name: string;
-    owner: string;
+    owner?: string;
 }
 
 const formatUSDC = (amount: bigint) => (Number(amount) / 1e6).toFixed(2);
@@ -86,10 +87,6 @@ function SubmitClaimPage() {
     const [stakeAmount, setStakeAmount] = useState('1');
     const [resolutionMinutes, setResolutionMinutes] = useState('5');
     const [predictedOutcome, setPredictedOutcome] = useState<boolean>(true);
-    const [useGasless, setUseGasless] = useState(true); // Default to gasless
-
-    // Gasless transaction hook
-    const { sendGasless, isReady: gaslessReady, isLoading: gaslessLoading, meeScanLink } = useGaslessTransaction();
 
     // Fetch user's agents
     useEffect(() => {
@@ -102,10 +99,10 @@ function SubmitClaimPage() {
             try {
                 const res = await fetch('/api/agents');
                 if (res.ok) {
-                    const data = await res.json();
+                    const data = await res.json() as { agents?: Agent[] };
                     // Filter agents owned by the connected wallet
                     const ownedAgents = (data.agents || []).filter(
-                        (a: any) => a.owner?.toLowerCase() === address.toLowerCase()
+                        (agent) => agent.owner?.toLowerCase() === address.toLowerCase()
                     );
                     setAgents(ownedAgents);
                     // Auto-select if coming from agent page or only one agent
@@ -127,29 +124,8 @@ function SubmitClaimPage() {
     // Transaction states
     const [step, setStep] = useState<'form' | 'approve' | 'submit' | 'success'>('form');
 
-    // Approve transaction
-    const {
-        data: approveHash,
-        isPending: isApproving,
-        writeContract: writeApprove,
-        error: approveError
-    } = useWriteContract();
-
-    const { isLoading: isApproveConfirming, isSuccess: isApproveConfirmed } = useWaitForTransactionReceipt({
-        hash: approveHash,
-    });
-
-    // Submit claim transaction
-    const {
-        data: submitHash,
-        isPending: isSubmitting,
-        writeContract: writeSubmit,
-        error: submitError
-    } = useWriteContract();
-
-    const { isLoading: isSubmitConfirming, isSuccess: isSubmitConfirmed } = useWaitForTransactionReceipt({
-        hash: submitHash,
-    });
+    const approveWrite = useAdaptiveWrite({ allowAA: true, fallbackToStandard: true });
+    const submitWrite = useAdaptiveWrite({ allowAA: true, fallbackToStandard: true });
 
     // Calculate values
     const stakeInUsdc = parseUnits(stakeAmount || '0', 6);
@@ -173,28 +149,28 @@ function SubmitClaimPage() {
 
     // Handle approve when confirmed
     useEffect(() => {
-        if (isApproveConfirmed) {
+        if (approveWrite.isConfirmed) {
             refetchAllowance();
             setStep('submit');
         }
-    }, [isApproveConfirmed, refetchAllowance]);
+    }, [approveWrite.isConfirmed, refetchAllowance]);
 
     // Handle submit when confirmed
     useEffect(() => {
-        if (isSubmitConfirmed) {
+        if (submitWrite.isConfirmed) {
             refetchBalance();
             setStep('success');
         }
-    }, [isSubmitConfirmed, refetchBalance]);
+    }, [submitWrite.isConfirmed, refetchBalance]);
 
     useEffect(() => {
-        if (submitError) console.error('Submit Error:', submitError);
-        if (approveError) console.error('Approve Error:', approveError);
-    }, [submitError, approveError]);
+        if (submitWrite.error) console.error('Submit Error:', submitWrite.error);
+        if (approveWrite.error) console.error('Approve Error:', approveWrite.error);
+    }, [submitWrite.error, approveWrite.error]);
 
     const handleApprove = () => {
         console.log('Approving USDC:', { spender: CONTRACTS.TRUTH_STAKE, amount: stakeInUsdc });
-        writeApprove({
+        approveWrite.writeContract({
             address: CONTRACTS.USDC as `0x${string}`,
             abi: ERC20_ABI,
             functionName: 'approve',
@@ -209,8 +185,7 @@ function SubmitClaimPage() {
             claimHash,
             stake: stakeInUsdc,
             resolvesAt,
-            outcome: predictedOutcome,
-            gasless: useGasless && gaslessReady
+            outcome: predictedOutcome
         });
 
         if (!selectedAgentId) {
@@ -218,32 +193,13 @@ function SubmitClaimPage() {
             return;
         }
 
-        // Use gasless if enabled and ready
-        if (useGasless && gaslessReady) {
-            try {
-                setStep('submit');
-                await sendGasless({
-                    to: CONTRACTS.TRUTH_STAKE as `0x${string}`,
-                    abi: TRUTH_STAKE_ABI,
-                    functionName: 'submitClaim',
-                    args: [BigInt(selectedAgentId), claimHash as `0x${string}`, stakeInUsdc, BigInt(resolvesAt), predictedOutcome],
-                });
-                refetchBalance();
-                setStep('success');
-            } catch (err) {
-                console.error('Gasless submit failed:', err);
-                setStep('form');
-            }
-        } else {
-            // Fallback to normal wagmi writeContract
-            writeSubmit({
-                address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
-                abi: TRUTH_STAKE_ABI,
-                functionName: 'submitClaim',
-                args: [BigInt(selectedAgentId), claimHash as `0x${string}`, stakeInUsdc, BigInt(resolvesAt), predictedOutcome],
-            });
-            if (step === 'form') setStep('submit');
-        }
+        submitWrite.writeContract({
+            address: CONTRACTS.TRUTH_STAKE as `0x${string}`,
+            abi: TRUTH_STAKE_ABI,
+            functionName: 'submitClaim',
+            args: [BigInt(selectedAgentId), claimHash as `0x${string}`, stakeInUsdc, BigInt(resolvesAt), predictedOutcome],
+        });
+        if (step === 'form') setStep('submit');
     };
 
     const canSubmit = selectedAgentId &&
@@ -298,6 +254,13 @@ function SubmitClaimPage() {
                     </p>
                 </div>
 
+                <div className="mb-6 p-3 rounded-lg border border-zinc-800 bg-zinc-900/20 text-xs">
+                    <p className="text-zinc-300 font-semibold">Execution Mode: {submitWrite.modeLabel}</p>
+                    {submitWrite.warning && (
+                        <p className="text-amber-400 mt-1">{submitWrite.warning}</p>
+                    )}
+                </div>
+
                 <div className="mb-6 p-4 rounded-lg border border-blue-900/30 bg-blue-950/10 text-xs text-zinc-400 space-y-1">
                     <p className="text-blue-300 font-semibold uppercase tracking-wider">Current Economics</p>
                     <p>
@@ -321,7 +284,7 @@ function SubmitClaimPage() {
                         <h3 className="text-2xl font-bold text-zinc-100 mb-2">Claim Submitted!</h3>
                         <p className="text-zinc-400 mb-6">Your prediction has been recorded on-chain.</p>
                         <div className="text-xs font-mono text-zinc-500 mb-6 break-all">
-                            TX: {submitHash}
+                            TX: {submitWrite.txHash ?? submitWrite.callsId ?? '--'}
                         </div>
                         <div className="flex gap-4 justify-center">
                             <Link
@@ -473,11 +436,13 @@ function SubmitClaimPage() {
                         </div>
 
                         {/* Error display */}
-                        {(approveError || submitError) && (
+                        {(approveWrite.error || submitWrite.error) && (
                             <div className="p-4 rounded-lg border border-red-900/50 bg-red-950/20 flex items-start gap-3">
                                 <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
                                 <div className="text-sm text-red-400">
-                                    {approveError?.message || submitError?.message}
+                                    {(submitWrite.error?.message?.includes('UnauthorizedAgentWallet')
+                                        ? 'Agent wallet authorization mismatch. Set this wallet as the agent wallet first, then retry.'
+                                        : (approveWrite.error?.message || submitWrite.error?.message))}
                                 </div>
                             </div>
                         )}
@@ -487,66 +452,39 @@ function SubmitClaimPage() {
                             <div className="p-4 rounded-lg border border-yellow-900/50 bg-yellow-950/20 flex items-start gap-3">
                                 <AlertCircle className="w-5 h-5 text-yellow-500 shrink-0 mt-0.5" />
                                 <div className="text-sm text-yellow-400">
-                                    Insufficient USDC balance. You have ${balanceFormatted}.
+                                    Insufficient USDC balance. You have {balanceFormatted}.
                                 </div>
                             </div>
-                        )}
-
-                        {/* Gasless Mode Toggle */}
-                        <div className="flex items-center justify-between p-3 rounded-lg bg-zinc-900/50 border border-zinc-800">
-                            <div className="flex items-center gap-2">
-                                <div className={`w-2 h-2 rounded-full ${gaslessReady ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} />
-                                <span className="text-sm text-zinc-400">
-                                    Gasless Mode {gaslessReady ? '(Ready)' : '(Initializing...)'}
-                                </span>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={() => setUseGasless(!useGasless)}
-                                className={`relative w-11 h-6 rounded-full transition-colors ${useGasless ? 'bg-teal-600' : 'bg-zinc-700'}`}
-                            >
-                                <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${useGasless ? 'left-6' : 'left-1'}`} />
-                            </button>
-                        </div>
-                        {useGasless && (
-                            <p className="text-xs text-teal-500/70 -mt-2">
-                                ⚡ No ETH needed - gas is sponsored by VeriBond
-                            </p>
                         )}
 
                         {/* Submit button */}
                         <button
                             type="submit"
-                            disabled={!canSubmit || isApproving || isApproveConfirming || isSubmitting || isSubmitConfirming || gaslessLoading}
+                            disabled={
+                                !canSubmit
+                                || approveWrite.isPending
+                                || approveWrite.isConfirming
+                                || submitWrite.isPending
+                                || submitWrite.isConfirming
+                            }
                             className="w-full p-4 rounded-lg bg-teal-600 text-white font-semibold text-lg hover:bg-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
                         >
-                            {(isApproving || isApproveConfirming) && (
+                            {(approveWrite.isPending || approveWrite.isConfirming) && (
                                 <>
                                     <Loader2 className="w-5 h-5 animate-spin" />
                                     Approving USDC...
                                 </>
                             )}
-                            {(isSubmitting || isSubmitConfirming || gaslessLoading) && (
+                            {(submitWrite.isPending || submitWrite.isConfirming) && (
                                 <>
                                     <Loader2 className="w-5 h-5 animate-spin" />
-                                    {gaslessLoading ? 'Submitting (Gasless)...' : 'Submitting Claim...'}
+                                    Submitting Claim...
                                 </>
                             )}
-                            {step === 'form' && !isApproving && !isSubmitting && !gaslessLoading && (
-                                needsApproval ? 'Approve USDC & Submit' : (useGasless ? '⚡ Submit Claim (Gasless)' : 'Submit Claim')
+                            {step === 'form' && !approveWrite.isPending && !submitWrite.isPending && (
+                                needsApproval ? 'Approve USDC & Submit' : 'Submit Claim'
                             )}
                         </button>
-
-                        {meeScanLink && (
-                            <a
-                                href={meeScanLink}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs text-teal-400 hover:text-teal-300 text-center block"
-                            >
-                                View on MEE Scan →
-                            </a>
-                        )}
 
                         {needsApproval && step === 'form' && (
                             <p className="text-xs text-zinc-500 text-center">

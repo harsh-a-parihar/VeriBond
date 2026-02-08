@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, usePublicClient, useBlockNumber } from 'wagmi';
 import { ADMIN_WALLET, AGENT_TOKEN_FACTORY, USDC } from '@/lib/contracts';
 import { AGENT_TOKEN_FACTORY_ABI, CCA_ABI, POST_AUCTION_LIQUIDITY_MANAGER_ABI } from '@/lib/abis';
-import { useGaslessTransaction } from '@/hooks';
+import { useAdaptiveWrite } from '@/hooks/useAdaptiveWrite';
 import { formatUnits, parseUnits, maxUint160, maxUint48, parseAbiItem } from 'viem';
 import { Loader2, TrendingUp, Wallet, Clock, CheckCircle, ArrowLeft, Activity, Gavel } from 'lucide-react';
 
@@ -190,12 +190,8 @@ export default function AuctionPage() {
     const [userBids, setUserBids] = useState<bigint[]>([]);
     const [lpRecipient, setLpRecipient] = useState('');
     const [lpTokenAmount, setLpTokenAmount] = useState('');
-    const [useGasless, setUseGasless] = useState(true); // Default to gasless
     const publicClient = usePublicClient();
     const { data: currentBlock } = useBlockNumber({ watch: true });
-
-    // Gasless transaction hook
-    const { sendGasless, isReady: gaslessReady, isLoading: gaslessLoading, meeScanLink } = useGaslessTransaction();
 
     // Read claimBlock to check if claiming is available
     const { data: claimBlock } = useReadContract({
@@ -206,8 +202,19 @@ export default function AuctionPage() {
         query: { enabled: !!auctionAddress }
     });
 
-    const isAuctionEnded = currentBlock && claimBlock ? currentBlock > claimBlock : false;
+    const endedByEndBlock = currentBlock && endBlock ? currentBlock >= endBlock : false;
+    const isAuctionEnded = currentBlock && claimBlock ? currentBlock >= claimBlock : endedByEndBlock;
     const isAuctionActive = currentBlock && endBlock ? currentBlock < endBlock : false;
+    const auctionStatusLabel = !currentBlock || !endBlock
+        ? 'Loading'
+        : isAuctionActive
+            ? 'Open for Bidding'
+            : 'Auction Ended';
+    const auctionStatusClass = !currentBlock || !endBlock
+        ? 'text-zinc-500'
+        : isAuctionActive
+            ? 'text-teal-500'
+            : 'text-red-500';
     const isAdmin = address?.toLowerCase() === ADMIN_WALLET.toLowerCase();
 
     const managerRecord = managerAuctionRecord as
@@ -298,16 +305,31 @@ export default function AuctionPage() {
     }, [publicClient, auctionAddress, address, startBlock, lastBidId]);
 
     // 4. Contract Writes
+    const bidWrite = useAdaptiveWrite({ allowAA: true, fallbackToStandard: true });
+    const claimWrite = useAdaptiveWrite({ allowAA: true, fallbackToStandard: true });
+    const exitWrite = useAdaptiveWrite({ allowAA: true, fallbackToStandard: true });
+
     const { writeContractAsync, isPending: isWritePending } = useWriteContract();
-    const { writeContract: writeBid, data: bidHash, isPending: isBidPending, error: bidError } = useWriteContract();
-    const { writeContract: writeClaim, data: claimHash, isPending: isClaimPending, error: claimError } = useWriteContract();
     const { writeContract: writeFinalize, data: finalizeHash, isPending: isFinalizePending, error: finalizeError } = useWriteContract();
     const { writeContract: writeRelease, data: releaseHash, isPending: isReleasePending, error: releaseError } = useWriteContract();
     const { writeContract: writeSeed, data: seedHash, isPending: isSeedPending, error: seedError } = useWriteContract();
 
+    const bidError = bidWrite.error;
+    const isBidPending = bidWrite.isPending;
+    const isBidConfirming = bidWrite.isConfirming;
+    const isBidSuccess = bidWrite.isConfirmed;
+
+    const claimHash = claimWrite.txHash;
+    const claimError = claimWrite.error;
+    const isClaimPending = claimWrite.isPending;
+    const isClaimConfirming = claimWrite.isConfirming;
+    const isClaimSuccess = claimWrite.isConfirmed;
+
+    const isExitPending = exitWrite.isPending;
+    const isExitConfirming = exitWrite.isConfirming;
+    const isExitSuccess = exitWrite.isConfirmed;
+
     // 5. Transaction Receipts
-    const { isSuccess: isBidSuccess, isLoading: isBidConfirming } = useWaitForTransactionReceipt({ hash: bidHash });
-    const { isSuccess: isClaimSuccess, isLoading: isClaimConfirming } = useWaitForTransactionReceipt({ hash: claimHash });
     const { isSuccess: isFinalizeSuccess, isLoading: isFinalizeConfirming } = useWaitForTransactionReceipt({ hash: finalizeHash });
     const { isSuccess: isReleaseSuccess, isLoading: isReleaseConfirming } = useWaitForTransactionReceipt({ hash: releaseHash });
     const { isSuccess: isSeedSuccess, isLoading: isSeedConfirming } = useWaitForTransactionReceipt({ hash: seedHash });
@@ -407,9 +429,6 @@ export default function AuctionPage() {
     }, [usesLegacyAuctionManager, auctionAddress, auctionFundsRecipient, factoryLiquidityManagerAddress]);
 
     // 6. Exit and Claim Flow
-    const { writeContract: writeExit, data: exitHash, isPending: isExitPending } = useWriteContract();
-    const { isSuccess: isExitSuccess, isLoading: isExitConfirming } = useWaitForTransactionReceipt({ hash: exitHash });
-
     // Monitor exit transaction
     useEffect(() => {
         if (isExitSuccess) {
@@ -434,7 +453,7 @@ export default function AuctionPage() {
 
         try {
             console.log('[Exit] Calling exitBid for bidId:', lastBidId.toString());
-            writeExit({
+            exitWrite.writeContract({
                 address: auctionAddress,
                 abi: CCA_ABI,
                 functionName: 'exitBid',
@@ -466,7 +485,7 @@ export default function AuctionPage() {
 
         try {
             console.log('[Claim] Calling claimTokens for bidId:', lastBidId.toString());
-            writeClaim({
+            claimWrite.writeContract({
                 address: auctionAddress,
                 abi: CCA_ABI,
                 functionName: 'claimTokens',
@@ -652,52 +671,24 @@ export default function AuctionPage() {
             // Per official docs: "maxPrice MUST be strictly above the current clearing price"
             const maxPriceQ96 = (floorPrice || BigInt(0)) + (tickSpacing || BigInt(0));
             console.log('[Bid] maxPriceQ96 (floorPrice + tickSpacing):', maxPriceQ96.toString());
-            console.log('[Bid] Gasless mode:', useGasless && gaslessReady);
+            console.log('[Bid] Submitting bid:', {
+                auctionAddress,
+                maxPriceQ96: maxPriceQ96.toString(),
+                amount: bidAmountParsed.toString(),
+                owner: address
+            });
 
-            // Use gasless if enabled and ready
-            if (useGasless && gaslessReady) {
-                console.log('[Bid] Submitting bid (gasless):', {
-                    auctionAddress,
-                    maxPriceQ96: maxPriceQ96.toString(),
-                    amount: bidAmountParsed.toString(),
-                    owner: address
-                });
-
-                await sendGasless({
-                    to: auctionAddress as `0x${string}`,
-                    abi: CCA_ABI,
-                    functionName: 'submitBid',
-                    args: [
-                        maxPriceQ96,
-                        bidAmountParsed,
-                        address,
-                        "0x" as `0x${string}`
-                    ],
-                });
-
-                setBidAmount('');
-                refetchPrice();
-                refetchCleared();
-            } else {
-                console.log('[Bid] Submitting bid:', {
-                    auctionAddress,
-                    maxPriceQ96: maxPriceQ96.toString(),
-                    amount: bidAmountParsed.toString(),
-                    owner: address
-                });
-
-                writeBid({
-                    address: auctionAddress,
-                    abi: CCA_ABI,
-                    functionName: 'submitBid',
-                    args: [
-                        maxPriceQ96,
-                        bidAmountParsed,
-                        address,
-                        "0x" as `0x${string}`
-                    ],
-                });
-            }
+            bidWrite.writeContract({
+                address: auctionAddress,
+                abi: CCA_ABI,
+                functionName: 'submitBid',
+                args: [
+                    maxPriceQ96,
+                    bidAmountParsed,
+                    address,
+                    "0x" as `0x${string}`
+                ],
+            });
         } catch (error) {
             console.error('[Bid] Error:', error);
         }
@@ -746,15 +737,22 @@ export default function AuctionPage() {
                     </div>
                 </div>
 
-                <div className="grid md:grid-cols-2 gap-8">
+                <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/20 text-xs">
+                    <p className="text-zinc-300 font-semibold">Execution Mode: {bidWrite.modeLabel}</p>
+                    {(bidWrite.warning || claimWrite.warning || exitWrite.warning) && (
+                        <p className="text-amber-400 mt-1">{bidWrite.warning || claimWrite.warning || exitWrite.warning}</p>
+                    )}
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-8 items-start">
 
                     {/* Bidding Card */}
-                    <div className="border border-white/5 bg-[#0a0a0a] rounded-lg overflow-hidden flex flex-col">
+                    <div className="border border-white/5 bg-[#0a0a0a] rounded-lg overflow-hidden">
                         <div className="p-4 border-b border-white/5 bg-zinc-900/20 flex justify-between items-center">
                             <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">Place Bid</h2>
                             <Gavel size={14} className="text-zinc-600" />
                         </div>
-                        <div className="p-6 space-y-6 flex-1">
+                        <div className="p-6 space-y-6">
                             <div className="space-y-2">
                                 <label className="text-xs text-zinc-400 font-medium">Bid Amount (USDC)</label>
                                 <div className="relative">
@@ -811,27 +809,14 @@ export default function AuctionPage() {
                                 </button>
                             ) : (
                                 <>
-                                    {/* Gasless Toggle */}
-                                    <div className="flex items-center justify-between mb-2">
-                                        <div className="flex items-center gap-1">
-                                            <div className={`w-1.5 h-1.5 rounded-full ${gaslessReady ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} />
-                                            <span className="text-[10px] text-zinc-500">Gasless</span>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => setUseGasless(!useGasless)}
-                                            className={`relative w-8 h-4 rounded-full transition-colors ${useGasless ? 'bg-blue-600' : 'bg-zinc-700'}`}
-                                        >
-                                            <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${useGasless ? 'left-4' : 'left-0.5'}`} />
-                                        </button>
-                                    </div>
+
                                     <button
                                         onClick={handleBid}
-                                        disabled={!bidAmount || !maxPrice || isBidPending || isBidConfirming || gaslessLoading}
+                                        disabled={!bidAmount || !maxPrice || isBidPending || isBidConfirming}
                                         className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold uppercase tracking-wider text-xs rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
                                     >
-                                        {isBidPending || isBidConfirming || gaslessLoading ? <Loader2 className="animate-spin h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
-                                        {gaslessLoading ? 'Submitting (Gasless)...' : (useGasless ? '⚡ Submit Bid (Gasless)' : 'Submit Bid')}
+                                        {isBidPending || isBidConfirming ? <Loader2 className="animate-spin h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
+                                        Submit Bid
                                     </button>
                                 </>
                             )}
@@ -855,7 +840,7 @@ export default function AuctionPage() {
                                 </div>
                                 <div className="flex justify-between items-center py-2 border-b border-white/5">
                                     <span className="text-xs text-zinc-500">Status</span>
-                                    <span className="text-[10px] font-bold uppercase text-teal-500">Open for Bidding</span>
+                                    <span className={`text-[10px] font-bold uppercase ${auctionStatusClass}`}>{auctionStatusLabel}</span>
                                 </div>
                             </div>
                         </div>

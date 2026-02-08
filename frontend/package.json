@@ -9,7 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@biconomy/abstractjs": "^1.1.21",
     "@erc7824/nitrolite": "^0.5.3",
     "@rainbow-me/rainbowkit": "^2.2.10",
     "@tanstack/react-query": "^5.90.20",
