@@ -11,7 +11,7 @@ type EndpointRequestPayload = {
 };
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 500, 502, 503, 504]);
-const AGENT_CHAT_TIMEOUT_MS = Math.max(5000, Number(process.env.AGENT_CHAT_TIMEOUT_MS ?? '60000'));
+const AGENT_CHAT_TIMEOUT_MS = Math.max(5000, Number(process.env.AGENT_CHAT_TIMEOUT_MS ?? '120000'));
 const AGENT_CHAT_MAX_RETRIES = Math.max(0, Number(process.env.AGENT_CHAT_MAX_RETRIES ?? '0'));
 const AGENT_CHAT_RETRY_BASE_MS = Math.max(100, Number(process.env.AGENT_CHAT_RETRY_BASE_MS ?? '350'));
 

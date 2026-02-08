@@ -9,13 +9,15 @@ const REGISTRAR_ABI = parseAbi([
     'function agentToNode(uint256 agentId) view returns (bytes32)',
     'function labelTaken(string label) view returns (bool)',
 ]);
+const CLAIM_NAME_MIN_TRUST = 10;
 
 export async function POST(request: NextRequest) {
     try {
         const { agentId, label, agentWallet, trustScore } = await request.json();
+        const normalizedLabel = String(label ?? '').trim().toLowerCase();
 
         // Validate inputs
-        if (!agentId || !label || !agentWallet) {
+        if (!agentId || !normalizedLabel || !agentWallet) {
             return NextResponse.json(
                 { error: 'Missing required fields: agentId, label, agentWallet' },
                 { status: 400 }
@@ -24,7 +26,7 @@ export async function POST(request: NextRequest) {
 
         // Validate label (3-32 chars, lowercase alphanumeric + hyphen)
         const labelRegex = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
-        if (!labelRegex.test(label) && label.length < 3) {
+        if (!labelRegex.test(normalizedLabel)) {
             return NextResponse.json(
                 { error: 'Invalid label. Must be 3-32 chars, lowercase alphanumeric and hyphens only.' },
                 { status: 400 }
@@ -33,9 +35,9 @@ export async function POST(request: NextRequest) {
 
         // Trust score check
         const score = Number(trustScore) || 0;
-        if (score < 50) {
+        if (score < CLAIM_NAME_MIN_TRUST) {
             return NextResponse.json(
-                { error: `Trust score (${score}) must be >= 50 to claim a name.` },
+                { error: `Trust score (${score}) must be >= ${CLAIM_NAME_MIN_TRUST} to claim a name.` },
                 { status: 400 }
             );
         }
@@ -66,12 +68,12 @@ export async function POST(request: NextRequest) {
             address: VERIBOND_REGISTRAR as `0x${string}`,
             abi: REGISTRAR_ABI,
             functionName: 'labelTaken',
-            args: [label],
+            args: [normalizedLabel],
         });
 
         if (labelTaken) {
             return NextResponse.json(
-                { error: `Name "${label}.veribond.basetest.eth" is already taken.` },
+                { error: `Name "${normalizedLabel}.veribond.basetest.eth" is already taken.` },
                 { status: 409 }
             );
         }
@@ -96,7 +98,7 @@ export async function POST(request: NextRequest) {
             address: VERIBOND_REGISTRAR as `0x${string}`,
             abi: REGISTRAR_ABI,
             functionName: 'claimName',
-            args: [BigInt(agentId), label, agentWallet as `0x${string}`, BigInt(score)],
+            args: [BigInt(agentId), normalizedLabel, agentWallet as `0x${string}`, BigInt(score)],
         });
 
         // Wait for confirmation
@@ -109,11 +111,25 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        const fullName = `${label}.veribond.basetest.eth`;
+        // Best-effort DB update to avoid stale UI before indexer catches the NameClaimed event.
+        if (process.env.DATABASE_URL) {
+            try {
+                const { default: pool } = await import('@/lib/db');
+                await pool.query(
+                    'UPDATE agents SET claimed_name = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+                    [String(agentId), normalizedLabel],
+                );
+            } catch (dbError) {
+                console.warn('[Claim Name API] DB update skipped:', dbError);
+            }
+        }
+
+        const fullName = `${normalizedLabel}.veribond.basetest.eth`;
 
         return NextResponse.json({
             success: true,
             name: fullName,
+            label: normalizedLabel,
             transactionHash: hash,
             message: `Successfully claimed ${fullName}!`,
         });

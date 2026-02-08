@@ -15,7 +15,7 @@ import {
     type SubmitAppStateResponse,
 } from '@erc7824/nitrolite';
 import { createWalletClient, http, isAddress, type Address, type Hex } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { getYellowAssetOrDefault, getYellowChainIdOrDefault, getYellowWsUrlOrDefault } from '@/lib/yellowConfig';
 
 type RpcResponse = ReturnType<typeof parseAnyRPCResponse>;
@@ -224,6 +224,8 @@ async function authenticate(ws: WebSocket, operatorPrivateKey: Hex, application:
     settlementAsset: string;
 }> {
     const account = privateKeyToAccount(operatorPrivateKey);
+    // Avoid stale "session key already exists but is expired" collisions by rotating the auth session key.
+    const authSessionKey = privateKeyToAccount(generatePrivateKey()).address;
     const signerRpcUrl = process.env.YELLOW_SIGNER_RPC_URL?.trim() || process.env.NEXT_PUBLIC_RPC_URL?.trim() || 'https://sepolia.base.org';
     const walletClient = createWalletClient({
         account,
@@ -235,7 +237,7 @@ async function authenticate(ws: WebSocket, operatorPrivateKey: Hex, application:
     const requestAuthChallenge = async (candidateAsset: string): Promise<RpcResponse> => {
         const authRequest = await createAuthRequestMessage({
             address: account.address,
-            session_key: account.address,
+            session_key: authSessionKey,
             application,
             allowances: [{ asset: candidateAsset, amount: allowanceAmount }],
             expires_at: expiresAt,
@@ -264,7 +266,7 @@ async function authenticate(ws: WebSocket, operatorPrivateKey: Hex, application:
             walletClient,
             {
                 scope,
-                session_key: account.address,
+                session_key: authSessionKey,
                 expires_at: expiresAt,
                 allowances,
             },

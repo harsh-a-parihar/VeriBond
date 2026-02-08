@@ -57,7 +57,7 @@ services:
   - type: cron
     name: veribond-indexer-sync
     runtime: node
-    plan: free
+    plan: starter
     branch: main
     schedule: "*/2 * * * *"
     buildCommand: echo "indexer cron ready"

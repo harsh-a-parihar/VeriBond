@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useAccount } from 'wagmi';
-import { useAgentStats, useClaimCount } from '@/hooks';
 import { ADMIN_WALLET } from '@/lib/contracts';
 import {
     Search, ShieldCheck, Gavel,
@@ -13,9 +12,8 @@ import {
     AlertTriangle, Plus, Layers
 } from 'lucide-react';
 // ... (imports)
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { RefreshCw } from 'lucide-react';
-import { CONTRACTS } from '@/lib/contracts';
 
 // --- TYPES ---
 
@@ -28,6 +26,7 @@ interface Agent {
     ticker: string;
     ens: string;
     status: AgentStatus;
+    hasAuction: boolean;
     price: number;
     change: number;
     accuracy: number;
@@ -37,30 +36,54 @@ interface Agent {
     description?: string;
 }
 
+interface AgentApiRow {
+    id: string;
+    owner?: string;
+    name?: string;
+    ticker?: string;
+    image?: string;
+    description?: string;
+    claimed_name?: string;
+    is_active?: boolean;
+    auction_address?: string | null;
+    auction_status?: string | null;
+    total_cleared?: string | number | null;
+    trust_score?: string | number | null;
+}
+
+interface AgentsApiResponse {
+    status?: string;
+    agents?: AgentApiRow[];
+}
+
 // Data Fetcher
 const fetchAgents = async (query: string = ''): Promise<Agent[]> => {
     const url = query ? `/api/agents?q=${encodeURIComponent(query)}` : '/api/agents';
     const res = await fetch(url);
-    const data = await res.json();
+    const data = await res.json() as AgentsApiResponse;
     if (data.status === 'init_needed') return [];
 
     // Transform DB rows to Agent interface
-    return (data.agents || []).map((row: any) => ({
-        id: row.id,
-        name: row.name,
-        ticker: row.ticker || 'UNK',
-        ens: row.claimed_name
-            ? `${row.claimed_name}.veribond`
-            : (row.owner ? (row.owner.slice(0, 6) + '...' + row.owner.slice(-4)) : 'Unknown'),
-        status: !row.is_active ? 'slashed' : (row.auction_status === 'active' ? 'auction' : 'active'),
-        price: Number(row.total_cleared || 0), // Use total cleared as price/mcap proxy
-        change: 0,
-        accuracy: Number(row.trust_score || 100),
-        staked: '0 USDC',
-        image: row.image,
-        description: row.description,
-        auctionProgress: 0 // TODO: Calculate progress from start/end blocks
-    }));
+    return (data.agents || []).map((row: AgentApiRow) => {
+        const hasAuction = !!row.auction_address;
+        return {
+            id: row.id,
+            name: row.name || 'Unknown Agent',
+            ticker: row.ticker || 'UNK',
+            ens: row.claimed_name
+                ? `${row.claimed_name}.veribond`
+                : (row.owner ? (row.owner.slice(0, 6) + '...' + row.owner.slice(-4)) : 'Unknown'),
+            status: !row.is_active ? 'slashed' : (hasAuction ? 'auction' : 'active'),
+            hasAuction,
+            price: Number(row.total_cleared || 0), // Use total cleared as price/mcap proxy
+            change: 0,
+            accuracy: Number(row.trust_score || 100),
+            staked: '0 USDC',
+            image: row.image,
+            description: row.description,
+            auctionProgress: 0 // TODO: Calculate progress from start/end blocks
+        }
+    });
 };
 
 const syncIndexer = async () => {
@@ -250,7 +273,6 @@ export default function VeriBondMarketplaceFinal() {
     const [searchInput, setSearchInput] = useState('');
     const [debouncedQuery, setDebouncedQuery] = useState('');
     const { address, isConnected } = useAccount();
-    const { count: claimCount } = useClaimCount();
 
     // Debounce search input
     React.useEffect(() => {
@@ -277,10 +299,19 @@ export default function VeriBondMarketplaceFinal() {
     // Auto-sync on mount (Developer Experience: Pull-on-read)
     React.useEffect(() => {
         sync();
-    }, []);
+    }, [sync]);
 
     const displayAddress = address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '';
     const isAdmin = address?.toLowerCase() === ADMIN_WALLET.toLowerCase();
+    const auctionAgents = agents.filter((agent) => agent.hasAuction);
+    const liveAgents = agents.filter((agent) => !agent.hasAuction);
+    const visibleAgents = view === 'auctions' ? auctionAgents : liveAgents;
+    const topPerformers = [...agents]
+        .sort((a, b) => {
+            if (b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
+            return Number(b.id) - Number(a.id);
+        })
+        .slice(0, 5);
 
     return (
         <div className="flex h-screen bg-[#050505] text-zinc-200 font-sans selection:bg-teal-900/30">
@@ -356,7 +387,9 @@ export default function VeriBondMarketplaceFinal() {
                         className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${view === 'auctions' ? 'bg-zinc-900 text-white border border-zinc-800' : 'text-zinc-500 hover:text-zinc-300'}`}
                     >
                         <Gavel size={16} /> Uniswap CCA Auctions
-                        <span className="ml-auto text-[10px] bg-blue-900/20 text-blue-500 px-1.5 py-0.5 rounded border border-blue-900/30">2</span>
+                        <span className="ml-auto text-[10px] bg-blue-900/20 text-blue-500 px-1.5 py-0.5 rounded border border-blue-900/30">
+                            {isLoading ? '...' : auctionAgents.length}
+                        </span>
                     </button>
                 </div>
 
@@ -396,20 +429,17 @@ export default function VeriBondMarketplaceFinal() {
                 </header>
 
                 {/* TOP PERFORMERS SECTION */}
-                {agents.length > 0 && (
+                {topPerformers.length > 0 && (
                     <div className="px-6 py-5 border-b border-white/5 bg-gradient-to-r from-zinc-900/50 via-purple-950/10 to-zinc-900/50">
                         <div className="flex items-center justify-between mb-4">
                             <div className="flex items-center gap-2">
                                 <span className="text-lg">🏆</span>
                                 <h2 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">Top Performers</h2>
                             </div>
-                            <span className="text-[10px] text-zinc-500 font-mono">By Trust Score</span>
+                            <span className="text-[10px] text-zinc-500 font-mono">By Trust Score (Global)</span>
                         </div>
                         <div className="flex gap-3 overflow-x-auto pb-1">
-                            {[...agents]
-                                .sort((a, b) => b.accuracy - a.accuracy)
-                                .slice(0, 5)
-                                .map((agent, index) => (
+                            {topPerformers.map((agent, index) => (
                                     <Link
                                         key={agent.id}
                                         href={`/agents/${agent.id}`}
@@ -494,13 +524,16 @@ export default function VeriBondMarketplaceFinal() {
                 <div className="flex-1 overflow-y-auto">
                     {isLoading ? (
                         <div className="p-10 text-center text-zinc-600">Loading Market Data...</div>
-                    ) : agents.length === 0 ? (
+                    ) : visibleAgents.length === 0 ? (
                         <div className="p-10 text-center text-zinc-600">
-                            No agents found via Indexer. <br />
+                            {view === 'auctions'
+                                ? 'No CCA auctions found for the current query.'
+                                : 'No live non-auction agents found for the current query.'}
+                            <br />
                             <button onClick={() => sync()} className="mt-2 text-zinc-400 underline hover:text-white">Run Sync</button>
                         </div>
                     ) : (
-                        agents.map((agent) => (
+                        visibleAgents.map((agent) => (
                             <AgentCard key={agent.id} agent={agent} />
                         ))
                     )}

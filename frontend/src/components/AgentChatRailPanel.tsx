@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Address } from 'viem';
 import { useAccount, useSignMessage } from 'wagmi';
 import { MessageSquare, Send, Wallet, Zap, RefreshCw, XCircle } from 'lucide-react';
@@ -127,6 +127,7 @@ export default function AgentChatRailPanel({
     const availableEndpoints = useMemo(() => prioritizeEndpoints(endpoints ?? []), [endpoints]);
     const [selectedEndpoint, setSelectedEndpoint] = useState<string>(availableEndpoints[0]?.value ?? '');
     const [selectedEndpointType, setSelectedEndpointType] = useState<string>((availableEndpoints[0]?.type ?? 'REST').toUpperCase());
+    const [endpointOverride, setEndpointOverride] = useState('');
     const [prepayUsdc, setPrepayUsdc] = useState('1.0');
     const [session, setSession] = useState<ChatSession | null>(null);
     const [earnings, setEarnings] = useState<AgentEarnings | null>(null);
@@ -139,6 +140,7 @@ export default function AgentChatRailPanel({
     const [sending, setSending] = useState(false);
     const [settling, setSettling] = useState(false);
     const [closing, setClosing] = useState(false);
+    const sendingLockRef = useRef(false);
 
     useEffect(() => {
         if (safeTrim(selectedEndpoint).length > 0) return;
@@ -158,6 +160,18 @@ export default function AgentChatRailPanel({
         const match = availableEndpoints.find((e) => e.value === value);
         setSelectedEndpoint(value);
         setSelectedEndpointType((match?.type ?? 'REST').toUpperCase());
+    };
+
+    const applyEndpointOverride = () => {
+        const trimmed = safeTrim(endpointOverride);
+        if (!trimmed) {
+            setStatusMessage('Enter a valid endpoint override URL first.');
+            return;
+        }
+        const inferredType = trimmed.toLowerCase().endsWith('.eth') ? 'ENS' : 'REST';
+        setSelectedEndpoint(trimmed);
+        setSelectedEndpointType(inferredType);
+        setStatusMessage(`Endpoint override applied (${inferredType}). Re-open session to use it.`);
     };
 
     const openSession = async () => {
@@ -294,10 +308,11 @@ export default function AgentChatRailPanel({
     };
 
     const sendMessage = async () => {
-        if (sending || !session || !walletAddress || !input.trim()) return;
+        if (sendingLockRef.current || sending || !session || !walletAddress || !input.trim()) return;
 
         const userContent = input.trim();
         setInput('');
+        sendingLockRef.current = true;
         setSending(true);
         setStatusMessage('Sending message and debiting rail balance...');
 
@@ -331,6 +346,7 @@ export default function AgentChatRailPanel({
             const message = error instanceof Error ? error.message : 'Message failed';
             setStatusMessage(message);
         } finally {
+            sendingLockRef.current = false;
             setSending(false);
         }
     };
@@ -395,6 +411,24 @@ export default function AgentChatRailPanel({
                         placeholder="1.0"
                         className="w-full h-9 rounded-md border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 outline-none focus:border-yellow-500"
                     />
+                </div>
+            </div>
+
+            <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wider text-zinc-500">Endpoint Override (temporary)</label>
+                <div className="flex gap-2">
+                    <input
+                        value={endpointOverride}
+                        onChange={(event) => setEndpointOverride(event.target.value)}
+                        placeholder="https://...trycloudflare.com/agent/chat"
+                        className="flex-1 h-9 rounded-md border border-white/10 bg-black/40 px-3 text-sm text-zinc-100 outline-none focus:border-yellow-500"
+                    />
+                    <button
+                        onClick={applyEndpointOverride}
+                        className="h-9 px-3 rounded-md border border-white/10 bg-zinc-900 text-zinc-200 hover:bg-zinc-800 text-xs font-semibold transition-colors"
+                    >
+                        Apply URL
+                    </button>
                 </div>
             </div>
 

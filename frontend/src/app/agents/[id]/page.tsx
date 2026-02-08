@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { useAccount, useReadContract, useReadContracts, useBlockNumber } from 'wagmi';
-import { IDENTITY_REGISTRY, TRUTH_STAKE, AGENT_TOKEN_FACTORY } from '@/lib/contracts';
+import { IDENTITY_REGISTRY, TRUTH_STAKE, AGENT_TOKEN_FACTORY, VERIBOND_REGISTRAR } from '@/lib/contracts';
 import { IDENTITY_REGISTRY_ABI, TRUTH_STAKE_ABI, AGENT_TOKEN_FACTORY_ABI, CCA_ABI } from '@/lib/abis';
 import { formatUnits, type Address } from 'viem';
 import {
@@ -51,6 +51,8 @@ type AgentsApiResponse = {
     agents?: AgentRecord[];
 };
 
+const ZERO_NODE = '0x0000000000000000000000000000000000000000000000000000000000000000';
+
 function normalizeMetadataEndpoints(input: unknown): Array<{ type?: string; value?: string }> {
     if (!Array.isArray(input)) return [];
     const out: Array<{ type?: string; value?: string }> = [];
@@ -69,6 +71,7 @@ function normalizeMetadataEndpoints(input: unknown): Array<{ type?: string; valu
 }
 
 export default function AgentDetailPage() {
+    const CLAIM_NAME_MIN_TRUST = 10;
     const params = useParams();
     const agentId = BigInt(params.id as string);
     const { address } = useAccount();
@@ -128,6 +131,13 @@ export default function AgentDetailPage() {
         address: AGENT_TOKEN_FACTORY,
         abi: AGENT_TOKEN_FACTORY_ABI,
         functionName: 'getAgentToken',
+        args: [agentId]
+    });
+
+    const { data: agentNameNode } = useReadContract({
+        address: VERIBOND_REGISTRAR,
+        abi: [{ name: 'agentToNode', type: 'function', stateMutability: 'view', inputs: [{ name: 'agentId', type: 'uint256' }], outputs: [{ type: 'bytes32' }] }] as const,
+        functionName: 'agentToNode',
         args: [agentId]
     });
 
@@ -263,6 +273,8 @@ export default function AgentDetailPage() {
 
     const hasAuction = auctionAddress && auctionAddress !== '0x0000000000000000000000000000000000000000';
     const hasToken = tokenAddress && tokenAddress !== '0x0000000000000000000000000000000000000000';
+    const hasOnchainName = !!agentNameNode && agentNameNode !== ZERO_NODE;
+    const hasClaimedName = !!claimedName || hasOnchainName;
 
     const isAuctionActive = hasAuction && currentBlock && endBlock ? currentBlock < endBlock : false;
     const isAuctionEnded = hasAuction && currentBlock && endBlock ? currentBlock >= endBlock : false;
@@ -314,6 +326,11 @@ export default function AgentDetailPage() {
                                     <span>{claimedName}.veribond</span>
                                 </div>
                             )}
+                            {!claimedName && hasOnchainName && (
+                                <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-900/20 border border-purple-900/40 rounded text-purple-400 text-xs font-bold font-mono">
+                                    <span>Name claimed on-chain (index sync pending)</span>
+                                </div>
+                            )}
 
                             {/* Trust Badge */}
                             <div className="flex items-center gap-2 px-3 py-1.5 bg-green-900/10 border border-green-900/30 rounded text-green-400 text-xs font-medium">
@@ -321,8 +338,8 @@ export default function AgentDetailPage() {
                                 <span>Trust Score: {dbTrustScore || trustScore}/100</span>
                             </div>
 
-                            {/* Claim Name Button (Owner only, trust >= 50, no existing name) */}
-                            {!claimedName && dbTrustScore >= 50 && address?.toLowerCase() === agentOwner && (
+                            {/* Claim Name Button (Owner only, trust >= threshold, no existing name) */}
+                            {!hasClaimedName && dbTrustScore >= CLAIM_NAME_MIN_TRUST && address?.toLowerCase() === agentOwner && (
                                 <button
                                     className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 border border-purple-500 rounded text-white text-xs font-medium transition-colors"
                                     onClick={() => setIsClaimModalOpen(true)}
