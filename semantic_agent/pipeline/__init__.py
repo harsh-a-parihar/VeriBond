@@ -6,8 +6,10 @@ from semantic_agent.pipeline.relations import run_discover_relations
 
 def __getattr__(name: str):
     """Lazy load modules on first use (avoids pulling pandas/embed/cluster when only running eval)."""
-    if name in ("load_from_csv_and_save", "load_markets_from_csv"):
-        from semantic_agent.pipeline.ingest import load_from_csv_and_save, load_markets_from_csv
+    if name in ("load_from_csv_and_save", "load_markets_from_csv", "load_from_all_sources"):
+        from semantic_agent.pipeline.ingest import load_from_csv_and_save, load_from_all_sources, load_markets_from_csv
+        if name == "load_from_all_sources":
+            return load_from_all_sources
         return load_from_csv_and_save if name == "load_from_csv_and_save" else load_markets_from_csv
     if name == "run_cluster_and_store":
         from semantic_agent.pipeline.cluster import run_cluster_and_store
@@ -30,6 +32,7 @@ def __getattr__(name: str):
 __all__ = [
     "load_markets_from_csv",
     "load_from_csv_and_save",
+    "load_from_all_sources",
     "run_embed_and_store",
     "run_cluster_and_store",
     "run_label_clusters",

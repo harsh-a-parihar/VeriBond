@@ -52,6 +52,7 @@ class MarketRelation(BaseModel):
     )
     confidence_score: float = Field(..., ge=0.0, le=1.0)
     rationale: str = Field(default="", description="Brief justification")
+    shared_event: str | None = Field(default=None, description="Shared real-world event linking both markets")
 
 
 class MarketRelationList(BaseModel):

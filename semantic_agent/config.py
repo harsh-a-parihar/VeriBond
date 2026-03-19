@@ -31,12 +31,43 @@ class Settings(BaseSettings):
     )
 
     # Embeddings
+    embedding_provider: str = Field(
+        default="local",
+        description="Provider: 'local' (sentence-transformers) or 'openai' (OpenAI Embeddings API)",
+    )
     embedding_model: str = Field(
         default="all-MiniLM-L6-v2",
-        description="Sentence-transformers model or OpenAI model name",
+        description="Sentence-transformers model (local) or OpenAI model e.g. text-embedding-3-small (openai)",
     )
-    embedding_dim: int = Field(default=384, ge=1, le=4096, description="Embedding dimension")
+    embedding_dim: int = Field(
+        default=384,
+        ge=1,
+        le=4096,
+        description="Embedding dimension. Local: 384 (MiniLM). OpenAI: 1536 (3-small) or 3072 (3-large). Must match provider.",
+    )
     embed_batch_size: int = Field(default=64, ge=1, le=512, description="Batch size for embedding")
+    embedding_cache_enabled: bool = Field(
+        default=True,
+        description="When True and provider=openai, cache embeddings by (market_id, text_hash) to avoid re-calling API",
+    )
+    embedding_openai_batch_size: int = Field(
+        default=100,
+        ge=1,
+        le=2048,
+        description="Max texts per OpenAI Embeddings API request (openai allows up to 2048)",
+    )
+    embedding_openai_delay_between_batches_seconds: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=60.0,
+        description="Delay between OpenAI embed batches (seconds). Use >0 to avoid 429 TPM rate limit on large runs.",
+    )
+    embedding_openai_max_retries_429: int = Field(
+        default=8,
+        ge=1,
+        le=30,
+        description="Max retries per batch when OpenAI returns 429 rate limit.",
+    )
 
     # Chroma (vector store)
     chroma_collection_name: str = Field(
@@ -77,6 +108,12 @@ class Settings(BaseSettings):
         le=10000,
         description="Max clusters to label per run (safety + cost control)",
     )
+    label_parallel_workers: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Number of clusters to label in parallel (LLM calls)",
+    )
     relations_max_clusters: int = Field(
         default=100,
         ge=1,
@@ -101,6 +138,31 @@ class Settings(BaseSettings):
         le=20,
         description="Number of clusters to process in parallel for relation discovery",
     )
+    relations_excluded_clusters_csv: str = Field(
+        default="",
+        description="Comma-separated cluster ids to exclude from relation discovery (e.g. c_21,c_31); set from eval export of worst clusters",
+    )
+    # Phase 1 filters: cosine (Option B), time overlap, outcome consistency
+    relations_min_cosine_sim: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="Min cosine similarity to at least one other market in cluster (Option B outlier removal); 0 = disabled",
+    )
+    relations_require_time_overlap: bool = Field(
+        default=True,
+        description="When True, drop markets with no temporal neighbor (overlap or start within max_start_gap_days); only when both have dates",
+    )
+    relations_max_start_gap_days: float = Field(
+        default=90.0,
+        ge=0.0,
+        le=365 * 2,
+        description="Max gap in days between start times to consider markets temporal neighbors; only applied when both have start_time",
+    )
+    relations_outcome_filter: bool = Field(
+        default=False,
+        description="When True, do not store a relation if both markets are resolved and outcome contradicts prediction (SAME vs OPPOSITE)",
+    )
 
     # Evaluation (compare predicted relations to resolved outcomes)
     eval_min_confidence: float = Field(
@@ -117,7 +179,7 @@ class Settings(BaseSettings):
     # Polymarket / APIs
     polymarket_api_base: str = Field(
         default="https://gamma-api.polymarket.com",
-        description="Polymarket API base URL",
+        description="Polymarket Gamma API base URL",
     )
     polymarket_api_key: str | None = Field(default=None, description="Polymarket API key if required")
 

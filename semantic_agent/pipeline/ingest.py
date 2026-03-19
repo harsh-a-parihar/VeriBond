@@ -267,3 +267,80 @@ def load_from_csv_and_save(
     init_schema(database_url)
     write_markets(markets, database_url)
     return markets
+
+
+def load_from_all_sources(
+    database_url: str,
+    *,
+    csv_path: str | Path | None = None,
+    use_gamma: bool = True,
+    min_duration_days: float = 7.0,
+    require_resolved: bool = False,
+    require_binary: bool = True,
+    csv_nrows: int | None = None,
+    gamma_max_pages: int | None = 50,
+) -> list[Market]:
+    """
+    Load markets from Gamma API and optional CSV; merge by market id;
+    filter by min_duration_days, require_binary, require_resolved; write to DB.
+    Returns the merged list of Market models.
+    """
+    configure_logging()
+    from semantic_agent.config import get_settings
+    from semantic_agent.fetchers.gamma import fetch_markets_from_gamma
+    from semantic_agent.store import init_schema, write_markets
+
+    settings = get_settings()
+    by_id: dict[str, Market] = {}
+
+    # 1. CSV first (so Gamma can overwrite with better question/resolution)
+    if csv_path is not None:
+        path = Path(csv_path)
+        if path.exists():
+            csv_markets = load_markets_from_csv(
+                path,
+                source_label="csv",
+                min_duration_days=min_duration_days,
+                require_resolved=require_resolved,
+                require_binary=require_binary,
+                nrows=csv_nrows,
+            )
+            for m in csv_markets:
+                by_id[m.id] = m
+            logger.info("Loaded %d markets from CSV", len(csv_markets))
+        else:
+            logger.warning("CSV path does not exist: %s", path)
+
+    # 2. Gamma (closed/resolved markets; overwrites same id from CSV)
+    if use_gamma:
+        try:
+            gamma_markets = fetch_markets_from_gamma(
+                base_url=settings.polymarket_api_base,
+                closed=True,
+                max_pages=gamma_max_pages,
+            )
+            for m in gamma_markets:
+                by_id[m.id] = m
+            logger.info("Fetched %d markets from Gamma", len(gamma_markets))
+        except Exception as e:
+            logger.warning("Gamma fetch failed: %s", e)
+
+    merged = list(by_id.values())
+
+    # Apply filters
+    if min_duration_days > 0:
+        merged = [m for m in merged if m.duration_days is None or m.duration_days >= min_duration_days]
+    if require_binary:
+        merged = [m for m in merged if m.is_binary]
+    if require_resolved:
+        merged = [m for m in merged if m.resolved_outcome is not None]
+
+    init_schema(database_url)
+    write_markets(merged, database_url)
+    n_csv = sum(1 for m in merged if getattr(m, "source", None) == "csv")
+    n_gamma = sum(1 for m in merged if getattr(m, "source", None) == "gamma")
+    logger.info(
+        "Merged %d markets from all sources (CSV=%d, Gamma=%d), wrote to %s",
+        len(merged), n_csv, n_gamma, database_url,
+    )
+    return merged

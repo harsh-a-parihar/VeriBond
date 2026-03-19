@@ -78,6 +78,7 @@ def init_schema(database_url: str) -> None:
                 is_same_outcome INTEGER NOT NULL,
                 confidence_score REAL NOT NULL,
                 rationale TEXT,
+                shared_event TEXT,
                 UNIQUE(cluster_id, market_id_i, market_id_j),
                 FOREIGN KEY (cluster_id) REFERENCES clusters(cluster_id),
                 FOREIGN KEY (market_id_i) REFERENCES markets(id),
@@ -85,8 +86,98 @@ def init_schema(database_url: str) -> None:
             )
             """
         )
+        # Add shared_event if missing (existing DBs created before this field)
+        try:
+            conn.execute("ALTER TABLE relations ADD COLUMN shared_event TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        # Phase 2: embedding cache for OpenAI (avoid re-calling API on re-runs)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                market_id TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                embedding_json TEXT NOT NULL,
+                PRIMARY KEY (market_id, text_hash, provider, model_name)
+            )
+            """
+        )
         conn.commit()
         logger.info("Schema initialized at %s", path)
+    finally:
+        conn.close()
+
+
+def get_cached_embeddings(
+    database_url: str,
+    provider: str,
+    model_name: str,
+    keys: list[tuple[str, str]],
+) -> dict[tuple[str, str], list[float]]:
+    """
+    Look up cached embeddings by (market_id, text_hash) for given provider and model.
+    keys: list of (market_id, text_hash).
+    Returns dict mapping (market_id, text_hash) -> list[float] for cache hits.
+    """
+    if not keys:
+        return {}
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        return {}
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.row_factory = sqlite3.Row
+        out: dict[tuple[str, str], list[float]] = {}
+        for market_id, text_hash in keys:
+            row = conn.execute(
+                """
+                SELECT embedding_json FROM embedding_cache
+                WHERE market_id = ? AND text_hash = ? AND provider = ? AND model_name = ?
+                """,
+                (market_id, text_hash, provider, model_name),
+            ).fetchone()
+            if row is not None:
+                try:
+                    vec = json.loads(row["embedding_json"])
+                    if isinstance(vec, list):
+                        out[(market_id, text_hash)] = [float(x) for x in vec]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return out
+    finally:
+        conn.close()
+
+
+def set_cached_embeddings(
+    database_url: str,
+    provider: str,
+    model_name: str,
+    entries: list[tuple[str, str, list[float]]],
+) -> None:
+    """
+    Store embeddings in cache. entries: list of (market_id, text_hash, embedding_list).
+    """
+    if not entries:
+        return
+    path = _sqlite_path(database_url)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    init_schema(database_url)
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO embedding_cache (market_id, text_hash, provider, model_name, embedding_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (market_id, text_hash, provider, model_name, json.dumps(emb))
+                for market_id, text_hash, emb in entries
+            ],
+        )
+        conn.commit()
+        logger.debug("Cached %d embeddings for %s/%s", len(entries), provider, model_name)
     finally:
         conn.close()
 
@@ -113,9 +204,9 @@ def clear_derived_data(database_url: str) -> None:
         conn.close()
 
 
-def write_markets(markets: list[Market], database_url: str) -> None:
+def write_markets(markets: list[Market], database_url: str, *, batch_size: int = 2000) -> None:
     """
-    Insert or replace markets into the markets table.
+    Insert or replace markets into the markets table (batched for speed).
     Creates schema if needed.
     """
     configure_logging()
@@ -126,33 +217,37 @@ def write_markets(markets: list[Market], database_url: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     init_schema(database_url)
     conn = sqlite3.connect(str(path))
+    insert_sql = """
+        INSERT OR REPLACE INTO markets
+        (id, question, description, start_time, end_time, duration_days, tags,
+         resolved_outcome, is_binary, slug, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
     try:
-        for m in markets:
-            start_time = m.start_time.isoformat() if m.start_time else None
-            end_time = m.end_time.isoformat() if m.end_time else None
-            tags_json = json.dumps(m.tags)
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO markets
-                (id, question, description, start_time, end_time, duration_days, tags,
-                 resolved_outcome, is_binary, slug, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    m.id,
-                    m.question,
-                    m.description or "",
-                    start_time,
-                    end_time,
-                    m.duration_days,
-                    tags_json,
-                    m.resolved_outcome,
-                    1 if m.is_binary else 0,
-                    m.slug or "",
-                    m.source,
-                ),
-            )
-        conn.commit()
+        for i in range(0, len(markets), batch_size):
+            batch = markets[i : i + batch_size]
+            rows = []
+            for m in batch:
+                start_time = m.start_time.isoformat() if m.start_time else None
+                end_time = m.end_time.isoformat() if m.end_time else None
+                tags_json = json.dumps(m.tags)
+                rows.append(
+                    (
+                        m.id,
+                        m.question,
+                        m.description or "",
+                        start_time,
+                        end_time,
+                        m.duration_days,
+                        tags_json,
+                        m.resolved_outcome,
+                        1 if m.is_binary else 0,
+                        m.slug or "",
+                        m.source,
+                    )
+                )
+            conn.executemany(insert_sql, rows)
+            conn.commit()
         logger.info("Wrote %d markets to %s", len(markets), path)
     finally:
         conn.close()
@@ -225,6 +320,76 @@ def read_markets(database_url: str) -> list[Market]:
             )
         )
     logger.info("Read %d markets from %s", len(markets), path)
+    return markets
+
+
+def read_markets_by_source(database_url: str, source: str) -> list[Market]:
+    """
+    Read all markets from the markets table with the given source (e.g. "gamma", "csv").
+    Returns list of Market models.
+    """
+    configure_logging()
+    path = _sqlite_path(database_url)
+    if not path.exists():
+        logger.warning("Database not found at %s", path)
+        return []
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM markets WHERE source = ?", (source,)).fetchall()
+    finally:
+        conn.close()
+    markets: list[Market] = []
+    for row in rows:
+        tags_raw = row["tags"]
+        if isinstance(tags_raw, str) and tags_raw:
+            try:
+                tags = json.loads(tags_raw)
+            except json.JSONDecodeError:
+                tags = []
+        else:
+            tags = []
+        start_time = row["start_time"]
+        end_time = row["end_time"]
+        if start_time:
+            try:
+                start_time = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            except Exception:
+                start_time = None
+        else:
+            start_time = None
+        if end_time:
+            try:
+                end_time = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+            except Exception:
+                end_time = None
+        else:
+            end_time = None
+        description = row["description"] or None
+        if description == "":
+            description = None
+        slug = row["slug"] or None
+        if slug == "":
+            slug = None
+        resolved = row["resolved_outcome"]
+        if resolved not in ("YES", "NO"):
+            resolved = None
+        markets.append(
+            Market(
+                id=row["id"],
+                question=row["question"],
+                description=description,
+                start_time=start_time,
+                end_time=end_time,
+                duration_days=row["duration_days"],
+                tags=tags,
+                resolved_outcome=resolved,
+                is_binary=bool(row["is_binary"]),
+                slug=slug,
+                source=row["source"] or "csv",
+            )
+        )
+    logger.info("Read %d markets with source=%s from %s", len(markets), source, path)
     return markets
 
 
@@ -449,6 +614,7 @@ def write_relations_for_cluster(
                     1 if r.is_same_outcome else 0,
                     float(r.confidence_score),
                     r.rationale,
+                    getattr(r, "shared_event", None),
                 )
                 for r in relations_deduped
             ]
@@ -462,8 +628,9 @@ def write_relations_for_cluster(
                     question_j,
                     is_same_outcome,
                     confidence_score,
-                    rationale
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    rationale,
+                    shared_event
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -512,22 +679,23 @@ def read_relations(database_url: str) -> list[tuple[str, "MarketRelation"]]:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute(
-            "SELECT cluster_id, market_id_i, market_id_j, question_i, question_j, "
-            "is_same_outcome, confidence_score, rationale FROM relations"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM relations").fetchall()
     finally:
         conn.close()
     out: list[tuple[str, MarketRelation]] = []
     for row in rows:
+        row = dict(row)
+        shared = row.get("shared_event")
+        shared = (shared or "").strip() or None if shared is not None else None
         rel = MarketRelation(
-            question_i=row["question_i"] or "",
-            question_j=row["question_j"] or "",
+            question_i=row.get("question_i") or "",
+            question_j=row.get("question_j") or "",
             market_id_i=row["market_id_i"],
             market_id_j=row["market_id_j"],
-            is_same_outcome=bool(row["is_same_outcome"]),
-            confidence_score=float(row["confidence_score"]),
-            rationale=(row["rationale"] or "") or "",
+            is_same_outcome=bool(row.get("is_same_outcome", 0)),
+            confidence_score=float(row.get("confidence_score", 0)),
+            rationale=(row.get("rationale") or "") or "",
+            shared_event=shared,
         )
         out.append((row["cluster_id"], rel))
     logger.info("Read %d relations from %s", len(out), path)
