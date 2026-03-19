@@ -218,6 +218,20 @@ def run_embed_and_store(
         embeddings = embed_markets_local(markets, model_name=model_name, batch_size=batch_size)
         all_embeddings = embeddings
 
+    # Validate embedding_dim against actual dimension and warn on mismatch.
+    if all_embeddings:
+        actual_dim = len(all_embeddings[0])
+        configured_dim = getattr(settings, "embedding_dim", None)
+        if configured_dim is not None and actual_dim != configured_dim:
+            logger.warning(
+                "embedding_dim mismatch: config says %d but %s/%s produces %d-dimensional vectors. "
+                "Update VERIBOND_EMBEDDING_DIM in your config to suppress this warning.",
+                configured_dim,
+                provider,
+                model_name,
+                actual_dim,
+            )
+
     chroma_path = Path(chroma_path).resolve()
     chroma_path.mkdir(parents=True, exist_ok=True)
 

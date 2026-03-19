@@ -110,6 +110,9 @@ def init_schema(database_url: str) -> None:
         conn.close()
 
 
+_EMBEDDING_CACHE_CHUNK_SIZE = 500
+
+
 def get_cached_embeddings(
     database_url: str,
     provider: str,
@@ -120,29 +123,46 @@ def get_cached_embeddings(
     Look up cached embeddings by (market_id, text_hash) for given provider and model.
     keys: list of (market_id, text_hash).
     Returns dict mapping (market_id, text_hash) -> list[float] for cache hits.
+
+    Uses chunked IN queries to avoid N+1 SELECT performance issues on large runs.
+    If the embedding_cache table does not yet exist, returns {} (schema is initialized
+    on first write via set_cached_embeddings).
     """
     if not keys:
         return {}
     path = _sqlite_path(database_url)
     if not path.exists():
         return {}
+    # Ensure schema exists; if table is absent on an old DB, return empty rather than crashing.
+    try:
+        init_schema(database_url)
+    except Exception:
+        return {}
     conn = sqlite3.connect(str(path))
     try:
         conn.row_factory = sqlite3.Row
         out: dict[tuple[str, str], list[float]] = {}
-        for market_id, text_hash in keys:
-            row = conn.execute(
-                """
-                SELECT embedding_json FROM embedding_cache
-                WHERE market_id = ? AND text_hash = ? AND provider = ? AND model_name = ?
+        key_set = set(keys)
+        # Process in chunks to keep the IN-clause size manageable.
+        for chunk_start in range(0, len(keys), _EMBEDDING_CACHE_CHUNK_SIZE):
+            chunk = keys[chunk_start : chunk_start + _EMBEDDING_CACHE_CHUNK_SIZE]
+            market_ids = list(dict.fromkeys(k[0] for k in chunk))
+            placeholders = ",".join("?" * len(market_ids))
+            rows = conn.execute(
+                f"""
+                SELECT market_id, text_hash, embedding_json FROM embedding_cache
+                WHERE provider = ? AND model_name = ? AND market_id IN ({placeholders})
                 """,
-                (market_id, text_hash, provider, model_name),
-            ).fetchone()
-            if row is not None:
+                [provider, model_name, *market_ids],
+            ).fetchall()
+            for row in rows:
+                k = (row["market_id"], row["text_hash"])
+                if k not in key_set:
+                    continue
                 try:
                     vec = json.loads(row["embedding_json"])
                     if isinstance(vec, list):
-                        out[(market_id, text_hash)] = [float(x) for x in vec]
+                        out[k] = [float(x) for x in vec]
                 except (json.JSONDecodeError, TypeError):
                     pass
         return out

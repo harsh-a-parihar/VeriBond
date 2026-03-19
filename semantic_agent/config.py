@@ -160,7 +160,7 @@ class Settings(BaseSettings):
         description="Max gap in days between start times to consider markets temporal neighbors; only applied when both have start_time",
     )
     relations_outcome_filter: bool = Field(
-        default=False,
+        default=True,
         description="When True, do not store a relation if both markets are resolved and outcome contradicts prediction (SAME vs OPPOSITE)",
     )
 
