@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from semantic_agent.logging_utils import configure_logging
-from semantic_agent.models.market import Cluster, Market, MarketRelation, MarketRelationList
+from semantic_agent.models.market import Cluster, Market, MarketRelation
 from semantic_agent.utils import retry_llm
 
 logger = logging.getLogger(__name__)

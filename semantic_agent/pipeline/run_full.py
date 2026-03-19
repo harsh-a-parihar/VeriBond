@@ -63,7 +63,7 @@ def run_full_pipeline(
                 db_url,
                 csv_path=csv_path_resolved,
                 use_gamma=True,
-                min_duration_days=0.0,
+                min_duration_days=min_days,
                 require_resolved=require_resolved,
                 require_binary=require_binary,
                 csv_nrows=nrows,
